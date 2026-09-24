@@ -5,6 +5,7 @@ import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 
 import '../models/fasting_settings.dart';
+import 'app_settings_service.dart';
 
 class NotificationService {
   NotificationService._();
@@ -56,7 +57,9 @@ class NotificationService {
   Future<void> scheduleFastingReminders(FastingSettings settings) async {
     await initialize();
     await cancelFastingReminders();
-    if (!settings.notificationsEnabled) return;
+    final appNotificationsEnabled =
+        await AppSettingsService.instance.notificationsEnabled();
+    if (!settings.notificationsEnabled || !appNotificationsEnabled) return;
 
     const details = NotificationDetails(
       android: AndroidNotificationDetails(

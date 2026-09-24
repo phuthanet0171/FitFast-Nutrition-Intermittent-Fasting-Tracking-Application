@@ -9,6 +9,8 @@ import 'food_screen.dart';
 import 'health_onboarding_screen.dart';
 import 'if_interest_screen.dart';
 import 'if_setup_method_screen.dart';
+import 'profile_screen.dart';
+import 'progress_screen.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({
@@ -29,6 +31,7 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _index = 0;
   FastingSettings? _fastingSettings;
+  int _nutritionRefreshVersion = 0;
 
   @override
   void initState() {
@@ -43,6 +46,10 @@ class _MainShellState extends State<MainShell> {
       Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => const HealthOnboardingScreen()),
       );
+      return;
+    }
+    if (age < 18) {
+      _showTeenIfMessage();
       return;
     }
     Navigator.of(context).push(
@@ -65,6 +72,10 @@ class _MainShellState extends State<MainShell> {
       );
       return;
     }
+    if (age < 18) {
+      _showTeenIfMessage();
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => IfSetupMethodScreen(
@@ -76,10 +87,30 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
+  void _showTeenIfMessage() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'FitFast ไม่เปิดแผน IF อัตโนมัติสำหรับอายุ 16–17 ปี '
+          'ควรปรึกษาผู้ปกครองหรือผู้เชี่ยวชาญก่อน',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = [
-      DashboardScreen(healthResult: widget.healthResult),
+      DashboardScreen(
+        healthResult: widget.healthResult,
+        refreshVersion: _nutritionRefreshVersion,
+      ),
+      FoodScreen(
+        healthResult: widget.healthResult,
+        onNutritionChanged: () {
+          setState(() => _nutritionRefreshVersion++);
+        },
+      ),
       FastingTimerScreen(
         settings: _fastingSettings,
         onSetupRequested: _openIfSetup,
@@ -91,16 +122,9 @@ class _MainShellState extends State<MainShell> {
           setState(() => _fastingSettings = settings);
         },
       ),
-      const FoodScreen(),
-      const _ComingSoonPage(
-        icon: Icons.show_chart_rounded,
-        title: 'ความก้าวหน้า',
-        description: 'ติดตามน้ำหนัก เป้าหมาย และความสม่ำเสมอของคุณ',
-      ),
-      const _ComingSoonPage(
-        icon: Icons.person_rounded,
-        title: 'โปรไฟล์',
-        description: 'จัดการข้อมูลสุขภาพ เป้าหมาย และการแจ้งเตือน',
+      const ProgressScreen(),
+      ProfileScreen(
+        fastingSettings: _fastingSettings,
       ),
     ];
 
@@ -128,16 +152,16 @@ class _MainShellState extends State<MainShell> {
                 label: 'Home',
               ),
               NavigationDestination(
-                icon: Icon(Icons.timer_outlined, color: AppColors.tealDark),
-                selectedIcon: Icon(Icons.timer_rounded, color: Colors.white),
-                label: 'IF',
-              ),
-              NavigationDestination(
                 icon: Icon(Icons.ramen_dining_outlined,
                     color: AppColors.tealDark),
                 selectedIcon:
                     Icon(Icons.ramen_dining_rounded, color: Colors.white),
                 label: 'Food',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.timer_outlined, color: AppColors.tealDark),
+                selectedIcon: Icon(Icons.timer_rounded, color: Colors.white),
+                label: 'IF',
               ),
               NavigationDestination(
                 icon: Icon(Icons.bar_chart_outlined, color: AppColors.tealDark),
@@ -153,64 +177,6 @@ class _MainShellState extends State<MainShell> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ComingSoonPage extends StatelessWidget {
-  const _ComingSoonPage({
-    required this.icon,
-    required this.title,
-    required this.description,
-  });
-
-  final IconData icon;
-  final String title;
-  final String description;
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 12),
-            Text(title, style: Theme.of(context).textTheme.headlineMedium),
-            const Spacer(),
-            Center(
-              child: Column(
-                children: [
-                  Container(
-                    width: 96,
-                    height: 96,
-                    decoration: const BoxDecoration(
-                      color: AppColors.mint,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(icon, size: 46, color: AppColors.tealDark),
-                  ),
-                  const SizedBox(height: 22),
-                  Text('กำลังเตรียมหน้านี้',
-                      style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 10),
-                  SizedBox(
-                    width: 290,
-                    child: Text(
-                      description,
-                      textAlign: TextAlign.center,
-                      style:
-                          const TextStyle(color: AppColors.muted, height: 1.5),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const Spacer(),
-          ],
         ),
       ),
     );

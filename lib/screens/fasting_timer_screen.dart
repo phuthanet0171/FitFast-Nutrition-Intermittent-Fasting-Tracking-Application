@@ -4,6 +4,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../models/fasting_settings.dart';
+import '../services/fasting_settings_service.dart';
+import '../services/fasting_session_service.dart';
 import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
 import 'if_settings_screen.dart';
@@ -32,18 +34,46 @@ class _FastingTimerScreenState extends State<FastingTimerScreen>
     with WidgetsBindingObserver {
   Timer? _ticker;
   bool _updatingPreferences = false;
+  bool? _lastFastingState;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _startTicker();
+    _syncSession();
+  }
+
+  @override
+  void didUpdateWidget(covariant FastingTimerScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.settings != widget.settings) {
+      _lastFastingState = null;
+      _syncSession();
+    }
+  }
+
+  void _syncSession() {
+    final settings = widget.settings;
+    if (settings == null) return;
+    unawaited(
+      FastingSessionService.instance
+          .syncCurrentSchedule(settings)
+          .catchError((_) {}),
+    );
   }
 
   void _startTicker() {
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && widget.settings != null) setState(() {});
+      final settings = widget.settings;
+      if (!mounted || settings == null) return;
+      final isFasting = _currentPhase(settings).isFasting;
+      if (_lastFastingState != isFasting) {
+        _lastFastingState = isFasting;
+        _syncSession();
+      }
+      setState(() {});
     });
   }
 
@@ -51,6 +81,7 @@ class _FastingTimerScreenState extends State<FastingTimerScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _startTicker();
+      _syncSession();
       if (mounted) setState(() {});
     }
   }
@@ -134,6 +165,7 @@ class _FastingTimerScreenState extends State<FastingTimerScreen>
           }
         }
       }
+      await FastingSettingsService.instance.save(updated);
       await NotificationService.instance.scheduleFastingReminders(updated);
       widget.onSettingsChanged(updated);
     } catch (_) {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/health_result.dart';
 import '../services/notification_service.dart';
+import '../services/fasting_settings_service.dart';
 import '../theme/app_theme.dart';
 import 'main_shell.dart';
 import 'if_schedule_setup_screen.dart';
@@ -203,6 +204,7 @@ class IfRecommendationResultScreen extends StatelessWidget {
       return;
     }
     await NotificationService.instance.cancelFastingReminders();
+    await FastingSettingsService.instance.clear();
     if (!context.mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(

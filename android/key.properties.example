@@ -1,0 +1,4 @@
+storePassword=เปลี่ยนเป็นรหัสผ่าน-keystore
+keyPassword=เปลี่ยนเป็นรหัสผ่าน-key
+keyAlias=fitfast
+storeFile=../fitfast-release.jks

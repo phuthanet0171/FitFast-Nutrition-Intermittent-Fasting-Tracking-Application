@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../models/health_profile.dart';
 import '../services/health_calculator.dart';
+import '../services/health_profile_service.dart';
+import '../services/weight_history_service.dart';
 import '../theme/app_theme.dart';
 import 'health_summary_screen.dart';
 
@@ -12,7 +15,7 @@ class HealthOnboardingScreen extends StatefulWidget {
 }
 
 class _HealthOnboardingScreenState extends State<HealthOnboardingScreen> {
-  static const _stepCount = 5;
+  static const _stepCount = 7;
   final _pageController = PageController();
   int _step = 0;
   int _age = 25;
@@ -20,6 +23,7 @@ class _HealthOnboardingScreenState extends State<HealthOnboardingScreen> {
   double _height = 170;
   double _currentWeight = 70;
   double _targetWeight = 65;
+  String _weightGoal = 'lose';
   String _activity = 'light';
 
   @override
@@ -40,7 +44,18 @@ class _HealthOnboardingScreenState extends State<HealthOnboardingScreen> {
     );
   }
 
-  void _next() {
+  Future<void> _next() async {
+    if (_step == 5 && !_targetMatchesGoal) {
+      final message = switch (_weightGoal) {
+        'lose' => 'น้ำหนักเป้าหมายต้องต่ำกว่าน้ำหนักปัจจุบัน',
+        'gain' => 'น้ำหนักเป้าหมายต้องสูงกว่าน้ำหนักปัจจุบัน',
+        _ => 'น้ำหนักเป้าหมายต้องเท่ากับน้ำหนักปัจจุบัน',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+      return;
+    }
     if (_step < _stepCount - 1) {
       setState(() => _step++);
       _pageController.nextPage(
@@ -55,12 +70,29 @@ class _HealthOnboardingScreenState extends State<HealthOnboardingScreen> {
       gender: _gender,
       height: _height,
       weight: _currentWeight,
+      targetWeight: _targetWeight,
       activity: _activity,
       experience: 'beginner',
       pregnantOrBreastfeeding: false,
       hasDiabetesOrMedication: false,
       hasEatingDisorderHistory: false,
+      weightGoal: _weightGoal,
     );
+
+    await HealthProfileService.instance.save(
+      HealthProfile(
+        age: _age,
+        gender: _gender,
+        height: _height,
+        currentWeight: _currentWeight,
+        targetWeight: _targetWeight,
+        activity: _activity,
+        weightGoal: _weightGoal,
+        updatedAt: DateTime.now(),
+      ),
+    );
+    await WeightHistoryService.instance.seedIfEmpty(_currentWeight);
+    if (!mounted) return;
 
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -73,6 +105,41 @@ class _HealthOnboardingScreenState extends State<HealthOnboardingScreen> {
         ),
       ),
     );
+  }
+
+  bool get _targetMatchesGoal => switch (_weightGoal) {
+        'lose' => _targetWeight < _currentWeight,
+        'gain' => _targetWeight > _currentWeight,
+        _ => _targetWeight == _currentWeight,
+      };
+
+  void _setAge(int value) {
+    setState(() {
+      _age = value.clamp(16, 80);
+      if (_age < 18) {
+        _weightGoal = 'maintain';
+        _targetWeight = _currentWeight;
+      }
+    });
+  }
+
+  void _setCurrentWeight(double value) {
+    setState(() {
+      _currentWeight = value;
+      if (_weightGoal == 'maintain') _targetWeight = value;
+    });
+  }
+
+  void _setWeightGoal(String value) {
+    if (_age < 18 && value != 'maintain') return;
+    setState(() {
+      _weightGoal = value;
+      _targetWeight = switch (value) {
+        'lose' => (_currentWeight - 5).clamp(40, 180).toDouble(),
+        'gain' => (_currentWeight + 5).clamp(40, 180).toDouble(),
+        _ => _currentWeight,
+      };
+    });
   }
 
   @override
@@ -119,7 +186,7 @@ class _HealthOnboardingScreenState extends State<HealthOnboardingScreen> {
                 children: [
                   _AgeStep(
                     value: _age,
-                    onChanged: (value) => setState(() => _age = value),
+                    onChanged: _setAge,
                   ),
                   _GenderStep(
                     value: _gender,
@@ -129,13 +196,20 @@ class _HealthOnboardingScreenState extends State<HealthOnboardingScreen> {
                     value: _height,
                     onChanged: (value) => setState(() => _height = value),
                   ),
-                  _WeightStep(
+                  _CurrentWeightStep(
+                    value: _currentWeight,
+                    onChanged: _setCurrentWeight,
+                  ),
+                  _WeightGoalStep(
+                    value: _weightGoal,
+                    isTeen: _age < 18,
+                    onChanged: _setWeightGoal,
+                  ),
+                  _TargetWeightStep(
                     currentWeight: _currentWeight,
                     targetWeight: _targetWeight,
-                    onCurrentChanged: (value) =>
-                        setState(() => _currentWeight = value),
-                    onTargetChanged: (value) =>
-                        setState(() => _targetWeight = value),
+                    goal: _weightGoal,
+                    onChanged: (value) => setState(() => _targetWeight = value),
                   ),
                   _ActivityStep(
                     value: _activity,
@@ -217,11 +291,13 @@ class _AgeStep extends StatelessWidget {
       child: _SliderCard(
         valueText: '$value',
         unit: 'ปี',
+        onDecrease: value > 16 ? () => onChanged(value - 1) : null,
+        onIncrease: value < 80 ? () => onChanged(value + 1) : null,
         child: Slider(
           value: value.toDouble(),
-          min: 18,
+          min: 16,
           max: 80,
-          divisions: 62,
+          divisions: 64,
           label: '$value ปี',
           onChanged: (newValue) => onChanged(newValue.round()),
         ),
@@ -280,6 +356,8 @@ class _HeightStep extends StatelessWidget {
       child: _SliderCard(
         valueText: value.round().toString(),
         unit: 'ซม.',
+        onDecrease: value > 130 ? () => onChanged(value - 1) : null,
+        onIncrease: value < 210 ? () => onChanged(value + 1) : null,
         child: Slider(
           value: value,
           min: 130,
@@ -293,41 +371,199 @@ class _HeightStep extends StatelessWidget {
   }
 }
 
-class _WeightStep extends StatelessWidget {
-  const _WeightStep({
-    required this.currentWeight,
-    required this.targetWeight,
-    required this.onCurrentChanged,
-    required this.onTargetChanged,
-  });
+class _CurrentWeightStep extends StatelessWidget {
+  const _CurrentWeightStep({required this.value, required this.onChanged});
 
-  final double currentWeight;
-  final double targetWeight;
-  final ValueChanged<double> onCurrentChanged;
-  final ValueChanged<double> onTargetChanged;
+  final double value;
+  final ValueChanged<double> onChanged;
 
   @override
   Widget build(BuildContext context) {
     return _StepLayout(
       icon: Icons.monitor_weight_outlined,
-      title: 'เป้าหมายน้ำหนักของคุณ',
-      description: 'เลือกน้ำหนักปัจจุบันและน้ำหนักที่ต้องการไปให้ถึง',
+      title: 'น้ำหนักปัจจุบันของคุณ',
+      description: 'ใช้คำนวณ BMI พลังงานพื้นฐาน และเป้าหมายรายวัน',
+      child: _CompactSliderCard(
+        label: 'น้ำหนักปัจจุบัน',
+        value: value,
+        onChanged: onChanged,
+      ),
+    );
+  }
+}
+
+class _WeightGoalStep extends StatelessWidget {
+  const _WeightGoalStep({
+    required this.value,
+    required this.isTeen,
+    required this.onChanged,
+  });
+
+  final String value;
+  final bool isTeen;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final options = [
+      (
+        'lose',
+        Icons.trending_down_rounded,
+        'ลดน้ำหนัก',
+        'ลดพลังงานอย่างค่อยเป็นค่อยไป',
+        AppColors.orange
+      ),
+      (
+        'maintain',
+        Icons.balance_rounded,
+        'รักษาน้ำหนัก',
+        'รับพลังงานใกล้เคียงที่ร่างกายใช้',
+        AppColors.teal
+      ),
+      (
+        'gain',
+        Icons.trending_up_rounded,
+        'เพิ่มน้ำหนัก',
+        'เพิ่มพลังงานอย่างค่อยเป็นค่อยไป',
+        AppColors.blue
+      ),
+    ];
+    return _StepLayout(
+      icon: Icons.flag_outlined,
+      title: 'เป้าหมายของคุณคืออะไร?',
+      description: isTeen
+          ? 'สำหรับอายุ 16–17 ปี FitFast จะเน้นรักษาน้ำหนักและการเติบโตอย่างเหมาะสม'
+          : 'เป้าหมายนี้จะใช้ปรับพลังงานและสารอาหารที่แนะนำต่อวัน',
       child: Column(
         children: [
-          _CompactSliderCard(
-            label: 'น้ำหนักปัจจุบัน',
-            value: currentWeight,
-            onChanged: onCurrentChanged,
-          ),
-          const SizedBox(height: 14),
-          _CompactSliderCard(
-            label: 'น้ำหนักเป้าหมาย',
-            value: targetWeight,
-            color: AppColors.orange,
-            onChanged: onTargetChanged,
-          ),
+          ...options.map((option) {
+            final disabled = isTeen && option.$1 != 'maintain';
+            final selected = value == option.$1;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Opacity(
+                opacity: disabled ? .48 : 1,
+                child: Material(
+                  color: selected
+                      ? option.$5.withValues(alpha: .09)
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  child: InkWell(
+                    onTap: disabled ? null : () => onChanged(option.$1),
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      padding: const EdgeInsets.all(17),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                            color: selected ? option.$5 : AppColors.border,
+                            width: selected ? 2 : 1),
+                      ),
+                      child: Row(children: [
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(
+                              color: option.$5.withValues(alpha: .12),
+                              borderRadius: BorderRadius.circular(15)),
+                          child: Icon(option.$2, color: option.$5),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                              Text(option.$3,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w800)),
+                              const SizedBox(height: 3),
+                              Text(
+                                  disabled
+                                      ? 'ใช้ได้ตั้งแต่อายุ 18 ปี'
+                                      : option.$4,
+                                  style: const TextStyle(
+                                      color: AppColors.muted, fontSize: 12)),
+                            ])),
+                        Icon(
+                            selected
+                                ? Icons.check_circle_rounded
+                                : disabled
+                                    ? Icons.lock_outline_rounded
+                                    : Icons.circle_outlined,
+                            color: selected ? option.$5 : AppColors.muted),
+                      ]),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }),
+          if (isTeen)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                  color: AppColors.orangeSoft,
+                  borderRadius: BorderRadius.circular(16)),
+              child: const Row(children: [
+                Icon(Icons.health_and_safety_outlined, color: AppColors.orange),
+                SizedBox(width: 10),
+                Expanded(
+                    child: Text(
+                        'หากต้องการลดหรือเพิ่มน้ำหนัก ควรปรึกษาผู้ปกครอง แพทย์ หรือนักกำหนดอาหาร',
+                        style: TextStyle(fontSize: 12, height: 1.4))),
+              ]),
+            ),
         ],
       ),
+    );
+  }
+}
+
+class _TargetWeightStep extends StatelessWidget {
+  const _TargetWeightStep(
+      {required this.currentWeight,
+      required this.targetWeight,
+      required this.goal,
+      required this.onChanged});
+
+  final double currentWeight;
+  final double targetWeight;
+  final String goal;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = switch (goal) {
+      'lose' => 'อยากลดเหลือเท่าไร?',
+      'gain' => 'อยากเพิ่มเป็นเท่าไร?',
+      _ => 'รักษาน้ำหนักปัจจุบัน',
+    };
+    return _StepLayout(
+      icon: Icons.track_changes_rounded,
+      title: title,
+      description: goal == 'maintain'
+          ? 'เราจะใช้พลังงานที่เหมาะกับการรักษาน้ำหนัก ${currentWeight.toStringAsFixed(1)} กก.'
+          : 'เลือกเป้าหมายที่ค่อยเป็นค่อยไป คุณสามารถแก้ไขภายหลังได้',
+      child: goal == 'maintain'
+          ? Card(
+              child: Padding(
+                padding: const EdgeInsets.all(30),
+                child: Column(children: [
+                  const Icon(Icons.balance_rounded,
+                      color: AppColors.teal, size: 44),
+                  const SizedBox(height: 12),
+                  Text('${currentWeight.toStringAsFixed(1)} กก.',
+                      style: const TextStyle(
+                          fontSize: 34, fontWeight: FontWeight.w900)),
+                ]),
+              ),
+            )
+          : _CompactSliderCard(
+              label: 'น้ำหนักเป้าหมาย',
+              value: targetWeight,
+              color: goal == 'lose' ? AppColors.orange : AppColors.blue,
+              onChanged: onChanged,
+            ),
     );
   }
 }
@@ -438,10 +674,16 @@ class _ActivityStep extends StatelessWidget {
 
 class _SliderCard extends StatelessWidget {
   const _SliderCard(
-      {required this.valueText, required this.unit, required this.child});
+      {required this.valueText,
+      required this.unit,
+      required this.child,
+      required this.onDecrease,
+      required this.onIncrease});
   final String valueText;
   final String unit;
   final Widget child;
+  final VoidCallback? onDecrease;
+  final VoidCallback? onIncrease;
 
   @override
   Widget build(BuildContext context) {
@@ -450,27 +692,33 @@ class _SliderCard extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(20, 28, 20, 20),
         child: Column(
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(valueText,
-                    style: const TextStyle(
-                        fontSize: 54,
-                        fontWeight: FontWeight.w900,
-                        color: AppColors.navy,
-                        height: 1)),
-                const SizedBox(width: 8),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 7),
-                  child: Text(unit,
-                      style: const TextStyle(
-                          color: AppColors.muted,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700)),
+            Row(children: [
+              _StepButton(icon: Icons.remove_rounded, onPressed: onDecrease),
+              Expanded(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(valueText,
+                        style: const TextStyle(
+                            fontSize: 50,
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.navy,
+                            height: 1)),
+                    const SizedBox(width: 7),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Text(unit,
+                          style: const TextStyle(
+                              color: AppColors.muted,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700)),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              _StepButton(icon: Icons.add_rounded, onPressed: onIncrease),
+            ]),
             const SizedBox(height: 24),
             child,
           ],
@@ -498,16 +746,23 @@ class _CompactSliderCard extends StatelessWidget {
         padding: const EdgeInsets.all(18),
         child: Column(
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(label,
-                    style: const TextStyle(fontWeight: FontWeight.w700)),
-                Text('${value.toStringAsFixed(1)} กก.',
-                    style: const TextStyle(
-                        fontSize: 21, fontWeight: FontWeight.w900)),
-              ],
-            ),
+            Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 14),
+            Row(children: [
+              _StepButton(
+                  icon: Icons.remove_rounded,
+                  onPressed: value > 40 ? () => onChanged(value - .5) : null,
+                  color: color),
+              Expanded(
+                  child: Text('${value.toStringAsFixed(1)} กก.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 28, fontWeight: FontWeight.w900))),
+              _StepButton(
+                  icon: Icons.add_rounded,
+                  onPressed: value < 180 ? () => onChanged(value + .5) : null,
+                  color: color),
+            ]),
             SliderTheme(
               data: SliderTheme.of(context)
                   .copyWith(activeTrackColor: color, thumbColor: color),
@@ -522,6 +777,32 @@ class _CompactSliderCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _StepButton extends StatelessWidget {
+  const _StepButton(
+      {required this.icon,
+      required this.onPressed,
+      this.color = AppColors.teal});
+
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: onPressed,
+      icon: Icon(icon),
+      color: color,
+      disabledColor: AppColors.border,
+      style: IconButton.styleFrom(
+        minimumSize: const Size(48, 48),
+        backgroundColor: color.withValues(alpha: .10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
       ),
     );
   }

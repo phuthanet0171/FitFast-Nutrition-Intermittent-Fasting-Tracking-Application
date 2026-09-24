@@ -8,9 +8,14 @@ import '../services/nutrition_history_service.dart';
 import '../theme/app_theme.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key, this.healthResult});
+  const DashboardScreen({
+    super.key,
+    this.healthResult,
+    this.refreshVersion = 0,
+  });
 
   final HealthResult? healthResult;
+  final int refreshVersion;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -41,6 +46,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   void didUpdateWidget(covariant DashboardScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.healthResult != widget.healthResult && _isToday) {
+      _loadDate(_selectedDate);
+    }
+    if (oldWidget.refreshVersion != widget.refreshVersion && _isToday) {
       _loadDate(_selectedDate);
     }
   }
@@ -358,6 +366,29 @@ class _EnergyCard extends StatelessWidget {
                 );
               },
             ),
+            if (!record.sugarDataComplete || !record.sodiumDataComplete) ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(13),
+                decoration: BoxDecoration(
+                  color: AppColors.orangeSoft,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info_outline_rounded, color: AppColors.orange),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'อาหารบางรายการไม่มีข้อมูลน้ำตาลหรือโซเดียม '
+                        'ยอดรวมวันนี้อาจต่ำกว่าค่าจริง',
+                        style: TextStyle(fontSize: 12, height: 1.4),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 18),
             _DailySummary(record: record),
           ],

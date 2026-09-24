@@ -2,6 +2,7 @@ class HealthResult {
   const HealthResult({
     required this.bmi,
     required this.bmr,
+    required this.tdee,
     required this.calories,
     required this.protein,
     required this.carbs,
@@ -11,10 +12,13 @@ class HealthResult {
     required this.recommendedPlan,
     required this.recommendationReason,
     required this.isFastingSuitable,
+    required this.weightGoal,
+    required this.usesTeenSafetyMode,
   });
 
   final double bmi;
   final double bmr;
+  final double tdee;
   final double calories;
   final double protein;
   final double carbs;
@@ -24,4 +28,6 @@ class HealthResult {
   final String recommendedPlan;
   final String recommendationReason;
   final bool isFastingSuitable;
+  final String weightGoal;
+  final bool usesTeenSafetyMode;
 }

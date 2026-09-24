@@ -8,11 +8,13 @@ class HealthCalculator {
     required String gender,
     required double height,
     required double weight,
+    double? targetWeight,
     required String activity,
     required String experience,
     required bool pregnantOrBreastfeeding,
     required bool hasDiabetesOrMedication,
     required bool hasEatingDisorderHistory,
+    String weightGoal = 'maintain',
   }) {
     final bmi = weight / pow(height / 100, 2);
     final genderValue = gender == 'male' ? 5 : -161;
@@ -24,7 +26,28 @@ class HealthCalculator {
       'high' => 1.725,
       _ => 1.2,
     };
-    final calories = bmr * activityFactor;
+    final tdee = bmr * activityFactor;
+    final usesTeenSafetyMode = age < 18;
+    final effectiveGoal = usesTeenSafetyMode ? 'maintain' : weightGoal;
+    final goalWeight = targetWeight ?? weight;
+    final differenceRatio =
+        weight <= 0 ? 0.0 : (goalWeight - weight).abs() / weight;
+    final adjustmentRate = differenceRatio <= .05
+        ? .10
+        : differenceRatio <= .10
+            ? .15
+            : .20;
+    final surplus = differenceRatio <= .05
+        ? 200.0
+        : differenceRatio <= .10
+            ? 300.0
+            : 400.0;
+    final calories = switch (effectiveGoal) {
+      'lose' =>
+        max(1200.0, tdee * (1 - adjustmentRate)).clamp(0, tdee).toDouble(),
+      'gain' => tdee + surplus,
+      _ => tdee,
+    };
     final hasSafetyRisk = age < 18 ||
         bmi < 18.5 ||
         pregnantOrBreastfeeding ||
@@ -52,6 +75,7 @@ class HealthCalculator {
     return HealthResult(
       bmi: bmi,
       bmr: bmr,
+      tdee: tdee,
       calories: calories,
       protein: (calories * .25) / 4,
       carbs: (calories * .45) / 4,
@@ -61,6 +85,8 @@ class HealthCalculator {
       recommendedPlan: plan,
       recommendationReason: reason,
       isFastingSuitable: !hasSafetyRisk,
+      weightGoal: effectiveGoal,
+      usesTeenSafetyMode: usesTeenSafetyMode,
     );
   }
 }

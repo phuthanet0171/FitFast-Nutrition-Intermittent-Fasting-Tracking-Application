@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/fasting_settings.dart';
 import '../models/health_result.dart';
 import '../services/notification_service.dart';
+import '../services/fasting_settings_service.dart';
 import '../theme/app_theme.dart';
 import 'main_shell.dart';
 
@@ -91,6 +92,7 @@ class _IfScheduleSetupScreenState extends State<IfScheduleSetupScreen> {
       notificationsEnabled: notificationsEnabled,
     );
 
+    await FastingSettingsService.instance.save(settings);
     await NotificationService.instance.scheduleFastingReminders(settings);
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(

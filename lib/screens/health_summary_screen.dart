@@ -27,6 +27,12 @@ class HealthSummaryScreen extends StatelessWidget {
     return 'สูงมากกว่าเกณฑ์';
   }
 
+  String get _goalLabel => switch (result.weightGoal) {
+        'lose' => 'ลดน้ำหนัก',
+        'gain' => 'เพิ่มน้ำหนัก',
+        _ => 'รักษาน้ำหนัก',
+      };
+
   void _continue(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -88,6 +94,43 @@ class HealthSummaryScreen extends StatelessWidget {
                         color: AppColors.blue)),
               ],
             ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: AppColors.mint,
+                  child: Icon(Icons.flag_rounded, color: AppColors.tealDark),
+                ),
+                title: const Text('เป้าหมายที่เลือก'),
+                trailing: Text(_goalLabel,
+                    style: const TextStyle(fontWeight: FontWeight.w900)),
+              ),
+            ),
+            if (result.usesTeenSafetyMode) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(15),
+                decoration: BoxDecoration(
+                  color: AppColors.orangeSoft,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: const Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.health_and_safety_outlined,
+                        color: AppColors.orange),
+                    SizedBox(width: 11),
+                    Expanded(
+                      child: Text(
+                        'สำหรับอายุ 16–17 ปี ระบบใช้เป้าหมายรักษาน้ำหนัก '
+                        'และจะไม่เปิดคำแนะนำ IF อัตโนมัติ',
+                        style: TextStyle(fontSize: 12, height: 1.45),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Card(
               child: Padding(

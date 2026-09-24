@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/health_result.dart';
 import '../services/notification_service.dart';
+import '../services/fasting_settings_service.dart';
 import '../theme/app_theme.dart';
 import 'if_setup_method_screen.dart';
 import 'main_shell.dart';
@@ -25,10 +26,28 @@ class IfInterestScreen extends StatefulWidget {
 class _IfInterestScreenState extends State<IfInterestScreen> {
   bool? _wantsIf;
 
+  bool get _isTeen => widget.age < 18;
+
   Future<void> _continue() async {
+    if (_isTeen) {
+      await NotificationService.instance.cancelFastingReminders();
+      await FastingSettingsService.instance.clear();
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (_) => MainShell(
+            healthResult: widget.healthResult,
+            age: widget.age,
+          ),
+        ),
+        (route) => false,
+      );
+      return;
+    }
     if (_wantsIf == null) return;
     if (_wantsIf == false) {
       await NotificationService.instance.cancelFastingReminders();
+      await FastingSettingsService.instance.clear();
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(
@@ -71,36 +90,49 @@ class _IfInterestScreenState extends State<IfInterestScreen> {
                     color: AppColors.tealDark, size: 38),
               ),
               const SizedBox(height: 24),
-              Text('คุณต้องการทำ IF ไหม?',
+              Text(
+                  _isTeen
+                      ? 'เริ่มดูแลสุขภาพอย่างเหมาะสม'
+                      : 'คุณต้องการทำ IF ไหม?',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.headlineMedium),
               const SizedBox(height: 10),
-              const Text(
-                'คุณสามารถใช้ระบบโภชนาการของ FitFast ได้\nแม้จะไม่เลือกทำ Intermittent Fasting',
+              Text(
+                _isTeen
+                    ? 'สำหรับอายุ 16–17 ปี FitFast จะเน้นโภชนาการที่สมดุลและไม่เปิดแผน IF อัตโนมัติ'
+                    : 'คุณสามารถใช้ระบบโภชนาการของ FitFast ได้\nแม้จะไม่เลือกทำ Intermittent Fasting',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: AppColors.muted, height: 1.5),
               ),
               const SizedBox(height: 34),
+              if (!_isTeen) ...[
+                _AnswerCard(
+                  icon: Icons.check_circle_outline_rounded,
+                  title: 'ต้องการทำ IF',
+                  description: 'ช่วยเลือกหรือตั้งค่าแผนการอดอาหาร',
+                  selected: _wantsIf == true,
+                  onTap: () => setState(() => _wantsIf = true),
+                ),
+                const SizedBox(height: 14),
+              ],
               _AnswerCard(
-                icon: Icons.check_circle_outline_rounded,
-                title: 'ต้องการทำ IF',
-                description: 'ช่วยเลือกหรือตั้งค่าแผนการอดอาหาร',
-                selected: _wantsIf == true,
-                onTap: () => setState(() => _wantsIf = true),
-              ),
-              const SizedBox(height: 14),
-              _AnswerCard(
-                icon: Icons.restaurant_menu_rounded,
-                title: 'ยังไม่ต้องการ',
-                description: 'เริ่มบันทึกอาหารและติดตามสุขภาพได้เลย',
-                selected: _wantsIf == false,
+                icon: _isTeen
+                    ? Icons.health_and_safety_outlined
+                    : Icons.restaurant_menu_rounded,
+                title:
+                    _isTeen ? 'ใช้ระบบโภชนาการโดยไม่เปิด IF' : 'ยังไม่ต้องการ',
+                description: _isTeen
+                    ? 'บันทึกอาหารและติดตามสุขภาพได้ตามปกติ'
+                    : 'เริ่มบันทึกอาหารและติดตามสุขภาพได้เลย',
+                selected: _isTeen || _wantsIf == false,
                 onTap: () => setState(() => _wantsIf = false),
               ),
               const Spacer(),
               FilledButton(
-                  onPressed: _wantsIf == null ? null : _continue,
-                  child:
-                      Text(_wantsIf == false ? 'เริ่มใช้ FitFast' : 'ถัดไป')),
+                  onPressed: _isTeen || _wantsIf != null ? _continue : null,
+                  child: Text(_isTeen || _wantsIf == false
+                      ? 'เริ่มใช้ FitFast'
+                      : 'ถัดไป')),
             ],
           ),
         ),

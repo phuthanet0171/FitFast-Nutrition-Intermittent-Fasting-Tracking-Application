@@ -13,6 +13,8 @@ class DailyNutritionRecord {
     required this.fatTarget,
     required this.sugarLimit,
     required this.sodiumLimit,
+    this.sugarDataComplete = true,
+    this.sodiumDataComplete = true,
   });
 
   final String dateKey;
@@ -28,6 +30,8 @@ class DailyNutritionRecord {
   final double fatTarget;
   final double sugarLimit;
   final double sodiumLimit;
+  final bool sugarDataComplete;
+  final bool sodiumDataComplete;
 
   bool get hasIntake =>
       calories > 0 ||
@@ -51,6 +55,8 @@ class DailyNutritionRecord {
         'fatTarget': fatTarget,
         'sugarLimit': sugarLimit,
         'sodiumLimit': sodiumLimit,
+        'sugarDataComplete': sugarDataComplete,
+        'sodiumDataComplete': sodiumDataComplete,
       };
 
   factory DailyNutritionRecord.fromJson(Map<String, dynamic> json) {
@@ -69,6 +75,8 @@ class DailyNutritionRecord {
       fatTarget: number('fatTarget'),
       sugarLimit: number('sugarLimit').clamp(0, 24).toDouble(),
       sodiumLimit: number('sodiumLimit'),
+      sugarDataComplete: json['sugarDataComplete'] as bool? ?? true,
+      sodiumDataComplete: json['sodiumDataComplete'] as bool? ?? true,
     );
   }
 
@@ -79,6 +87,8 @@ class DailyNutritionRecord {
     double? fat,
     double? sugar,
     double? sodium,
+    bool? sugarDataComplete,
+    bool? sodiumDataComplete,
   }) {
     return DailyNutritionRecord(
       dateKey: dateKey,
@@ -94,6 +104,8 @@ class DailyNutritionRecord {
       fatTarget: fatTarget,
       sugarLimit: sugarLimit,
       sodiumLimit: sodiumLimit,
+      sugarDataComplete: sugarDataComplete ?? this.sugarDataComplete,
+      sodiumDataComplete: sodiumDataComplete ?? this.sodiumDataComplete,
     );
   }
 }

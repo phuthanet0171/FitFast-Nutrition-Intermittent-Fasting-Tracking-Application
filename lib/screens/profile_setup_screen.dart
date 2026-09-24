@@ -56,6 +56,7 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       gender: _gender,
       height: double.parse(_height.text),
       weight: double.parse(_weight.text),
+      targetWeight: double.parse(_targetWeight.text),
       activity: _activity,
       experience: _experience,
       pregnantOrBreastfeeding: _pregnant,

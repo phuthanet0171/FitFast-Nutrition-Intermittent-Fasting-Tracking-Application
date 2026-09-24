@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/fasting_settings_service.dart';
 import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
 
@@ -50,6 +51,7 @@ class IfSettingsScreen extends StatelessWidget {
     if (confirmed != true) return;
 
     await NotificationService.instance.cancelFastingReminders();
+    await FastingSettingsService.instance.clear();
     onPlanCancelled();
     if (context.mounted) Navigator.of(context).pop();
   }
