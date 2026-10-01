@@ -8,6 +8,8 @@ class AppColors {
   static const orange = Color(0xFFFF7A4D);
   static const orangeSoft = Color(0xFFFFEFE9);
   static const blue = Color(0xFF5578EE);
+  static const amber = Color(0xFFFFC34D);
+  static const purple = Color(0xFF8C72D9);
   static const surface = Color(0xFFF6F8FA);
   static const border = Color(0xFFE7ECF0);
   static const muted = Color(0xFF718096);

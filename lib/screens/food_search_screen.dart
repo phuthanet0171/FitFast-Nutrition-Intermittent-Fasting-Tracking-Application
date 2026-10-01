@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/food_item.dart';
+import '../models/health_result.dart';
 import '../models/meal_entry.dart';
 import '../services/food_catalog_service.dart';
 import '../services/food_preference_service.dart';
+import '../services/food_search.dart';
 import '../widgets/food_photo.dart';
 import 'food_amount_screen.dart';
 
@@ -13,11 +15,13 @@ class FoodSearchScreen extends StatefulWidget {
       required this.mealType,
       required this.dateKey,
       this.componentPicker = false,
-      this.initialQuery = ''});
+      this.initialQuery = '',
+      this.healthResult});
   final MealType mealType;
   final String dateKey;
   final bool componentPicker;
   final String initialQuery;
+  final HealthResult? healthResult;
   @override
   State<FoodSearchScreen> createState() => _FoodSearchScreenState();
 }
@@ -27,7 +31,7 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
   Timer? _timer;
   List<FoodItem> _foods = [], _recent = [], _favorites = [];
   int _tab = 0, _request = 0;
-  bool _loading = true, _opening = false;
+  bool _loading = true, _opening = false, _tabChosen = false;
   String? _error;
   @override
   void initState() {
@@ -45,7 +49,16 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
         setState(() {
           _recent = recent;
           _favorites = favorites;
+          // Most meals repeat, so an empty search opens on recent foods.
+          if (!_tabChosen &&
+              !widget.componentPicker &&
+              _query.text.trim().isEmpty &&
+              recent.isNotEmpty) {
+            _tab = 1;
+          }
         });
+        // Rank the foods this user eats ahead of look-alikes.
+        if (_query.text.trim().isNotEmpty) _search();
       }
     } catch (_) {/* Search remains available without saved preferences. */}
   }
@@ -57,7 +70,13 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
       _error = null;
     });
     try {
-      final foods = await FoodCatalogService.instance.search(_query.text);
+      final foods = await FoodCatalogService.instance.search(
+        _query.text,
+        preferIds: {
+          for (final food in _recent) food.id,
+          for (final food in _favorites) food.id,
+        },
+      );
       if (mounted && request == _request) {
         setState(() {
           _foods = foods;
@@ -85,7 +104,8 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
         builder: (_) => FoodAmountScreen(
             food: food,
             initialMealType: widget.mealType,
-            dateKey: widget.dateKey)));
+            dateKey: widget.dateKey,
+            healthResult: widget.healthResult)));
     _opening = false;
     if (entry == null || !mounted) return;
     unawaited(FoodPreferenceService.instance
@@ -106,6 +126,18 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
     }
   }
 
+  /// Energy per default household unit when one exists, else per 100 g.
+  static String _energyLabel(FoodItem food) {
+    final serving = food.defaultServing;
+    if (serving == null) {
+      return '${food.energyKcalPer100g.round()} kcal / 100 กรัม';
+    }
+    final kcal = food.energyKcalPer100g * serving.grams / 100;
+    final approx = serving.isEstimate ? '≈' : '';
+    return '${serving.label} $approx${serving.grams.round()} ก. '
+        '· ${kcal.round()} kcal';
+  }
+
   @override
   void dispose() {
     _timer?.cancel();
@@ -120,15 +152,9 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
         : _tab == 1
             ? _recent
             : _favorites;
-    final items = _tab == 0
-        ? source
-        : source
-            .where((f) =>
-                f.nameTh.contains(_query.text.trim()) ||
-                (f.nameEn ?? '')
-                    .toLowerCase()
-                    .contains(_query.text.trim().toLowerCase()))
-            .toList();
+    final query = _query.text.trim();
+    final items =
+        _tab == 0 || query.isEmpty ? source : FoodSearch(source).search(query);
     return Scaffold(
         appBar: AppBar(
             title: Text(widget.componentPicker
@@ -152,8 +178,11 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
                   onChanged: (_) {
                     _timer?.cancel();
                     ++_request;
-                    setState(() {});
-                    _timer = Timer(const Duration(milliseconds: 350), _search);
+                    setState(() {
+                      if (!_tabChosen && _tab == 1) _tab = 0;
+                      _tabChosen = true;
+                    });
+                    _timer = Timer(const Duration(milliseconds: 150), _search);
                   })),
           Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -163,7 +192,10 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
                   ChoiceChip(
                       label: Text(label),
                       selected: _tab == index,
-                      onSelected: (_) => setState(() => _tab = index)),
+                      onSelected: (_) => setState(() {
+                            _tab = index;
+                            _tabChosen = true;
+                          })),
               ])),
           Padding(
               padding: const EdgeInsets.all(12),
@@ -196,15 +228,23 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
                                 final food = items[index];
                                 final favorite =
                                     _favorites.any((f) => f.id == food.id);
+                                final loggedBefore = _tab != 1 &&
+                                    _recent.any((f) => f.id == food.id);
                                 return ListTile(
                                     contentPadding: const EdgeInsets.symmetric(
                                         horizontal: 8, vertical: 10),
-                                    leading: FoodPhoto(url: food.imageUrl),
-                                    title: Text(food.nameTh,
+                                    leading: FoodPhoto(
+                                        url: food.imageUrl,
+                                        foodCode: food.foodCode),
+                                    title: Text(food.displayName,
                                         style: const TextStyle(
                                             fontWeight: FontWeight.w700)),
-                                    subtitle: Text(
-                                        '${food.energyKcalPer100g.round()} kcal / 100 กรัม'),
+                                    subtitle: Text([
+                                      if (food.displayName != food.nameTh)
+                                        '${food.nameTh}\n',
+                                      if (loggedBefore) 'เคยบันทึก · ',
+                                      _energyLabel(food),
+                                    ].join()),
                                     onTap: () => _select(food),
                                     trailing: IconButton(
                                         tooltip: favorite

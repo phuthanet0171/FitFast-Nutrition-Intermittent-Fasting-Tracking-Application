@@ -150,7 +150,7 @@ class _FoodComponentsScreenState extends State<FoodComponentsScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
         children: [
-          Text(widget.parentFood.nameTh,
+          Text(widget.parentFood.displayName,
               style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 6),
           const Text(

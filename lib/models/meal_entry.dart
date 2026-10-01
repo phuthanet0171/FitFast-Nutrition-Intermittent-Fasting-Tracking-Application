@@ -18,6 +18,15 @@ extension MealTypeLabel on MealType {
       );
 }
 
+int _lastIdMicros = 0;
+
+/// Creates a unique entry id, even when several entries are made at once.
+String newMealEntryId(int foodId) {
+  final now = DateTime.now().microsecondsSinceEpoch;
+  _lastIdMicros = now > _lastIdMicros ? now : _lastIdMicros + 1;
+  return '${_lastIdMicros}_$foodId';
+}
+
 class MealEntry {
   const MealEntry({
     required this.id,
@@ -59,6 +68,41 @@ class MealEntry {
 
   bool get isDetailed => components.isNotEmpty;
 
+  MealEntry copyWith({
+    String? id,
+    String? dateKey,
+    MealType? mealType,
+    DateTime? createdAt,
+  }) =>
+      MealEntry(
+        id: id ?? this.id,
+        dateKey: dateKey ?? this.dateKey,
+        mealType: mealType ?? this.mealType,
+        foodId: foodId,
+        foodCode: foodCode,
+        foodName: foodName,
+        grams: grams,
+        calories: calories,
+        protein: protein,
+        carbs: carbs,
+        fat: fat,
+        sugar: sugar,
+        sodium: sodium,
+        hasSugarData: hasSugarData,
+        hasSodiumData: hasSodiumData,
+        createdAt: createdAt ?? this.createdAt,
+        components: components,
+      );
+
+  /// A new entry with the same food and portion, for quick re-logging.
+  MealEntry relogAs({required String dateKey, required MealType mealType}) =>
+      copyWith(
+        id: newMealEntryId(foodId),
+        dateKey: dateKey,
+        mealType: mealType,
+        createdAt: DateTime.now(),
+      );
+
   factory MealEntry.fromFood({
     required FoodItem food,
     required MealType mealType,
@@ -70,12 +114,12 @@ class MealEntry {
     final multiplier = grams / 100;
     final now = DateTime.now();
     return MealEntry(
-      id: existingId ?? '${now.microsecondsSinceEpoch}_${food.id}',
+      id: existingId ?? newMealEntryId(food.id),
       dateKey: dateKey,
       mealType: mealType,
       foodId: food.id,
       foodCode: food.foodCode,
-      foodName: food.nameTh,
+      foodName: food.displayName,
       grams: grams,
       calories: food.energyKcalPer100g * multiplier,
       protein: food.proteinGPer100g * multiplier,
@@ -100,12 +144,12 @@ class MealEntry {
   }) {
     final now = DateTime.now();
     return MealEntry(
-      id: existingId ?? '${now.microsecondsSinceEpoch}_${parentFood.id}',
+      id: existingId ?? newMealEntryId(parentFood.id),
       dateKey: dateKey,
       mealType: mealType,
       foodId: parentFood.id,
       foodCode: parentFood.foodCode,
-      foodName: parentFood.nameTh,
+      foodName: parentFood.displayName,
       grams: components.fold(0, (sum, item) => sum + item.grams),
       calories: components.fold(0, (sum, item) => sum + item.calories),
       protein: components.fold(0, (sum, item) => sum + item.protein),
@@ -222,7 +266,7 @@ class MealComponent {
   factory MealComponent.fromFood(FoodItem food, double grams) => MealComponent(
         foodId: food.id,
         foodCode: food.foodCode,
-        foodName: food.nameTh,
+        foodName: food.displayName,
         grams: grams,
         energyKcalPer100g: food.energyKcalPer100g,
         proteinGPer100g: food.proteinGPer100g,

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -5,6 +6,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/meal_entry.dart';
 import 'sync_status_service.dart';
+
+/// A food the user logs often, with the latest entry as its portion template.
+class FrequentFood {
+  const FrequentFood({required this.template, required this.count});
+
+  final MealEntry template;
+  final int count;
+}
 
 class MealHistoryService {
   MealHistoryService._();
@@ -14,31 +23,172 @@ class MealHistoryService {
   static const _legacyOwnerKey = 'fitfast_meal_entries_v1_owner';
   static const _userKeyPrefix = 'fitfast_meal_entries_v2_';
   static const _migratedPrefix = 'fitfast_meal_entries_migrated_';
+  // Set by the previous snapshot-based sync. Still honoured so an unsynced
+  // snapshot on an upgraded device is not lost.
   static const _dirtyPrefix = 'fitfast_meal_entries_dirty_';
+  static const _pendingPrefix = 'fitfast_meal_entries_pending_';
+  static const _cacheLifetime = Duration(minutes: 5);
+  static const _retryAfterFailure = Duration(seconds: 30);
   final SharedPreferencesAsync _preferences = SharedPreferencesAsync();
+
+  String? _cacheUserId;
+  List<MealEntry>? _cache;
+  DateTime? _fetchedAt;
+  DateTime? _failedAt;
+  Future<void>? _busy;
 
   String? get _userId => Supabase.instance.client.auth.currentUser?.id;
   String _userKey(String userId) => '$_userKeyPrefix$userId';
 
-  Future<List<MealEntry>> _readAll() async {
+  /// Runs storage operations one at a time so a sync never interleaves with
+  /// another write and drops a pending change.
+  Future<T> _serial<T>(Future<T> Function() action) async {
+    final previous = _busy;
+    final done = Completer<void>();
+    _busy = done.future;
+    if (previous != null) await previous;
+    try {
+      return await action();
+    } finally {
+      if (identical(_busy, done.future)) _busy = null;
+      done.complete();
+    }
+  }
+
+  Future<List<MealEntry>> loadDate(String dateKey, {bool refresh = false}) =>
+      _serial(() async {
+        final entries = await _readAll(refresh: refresh);
+        return entries.where((entry) => entry.dateKey == dateKey).toList()
+          ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      });
+
+  Future<MealEntry?> loadLatestDetailedForFood(int foodId) => _serial(() async {
+        final entries = await _readAll();
+        final matches = entries
+            .where((entry) => entry.foodId == foodId && entry.isDetailed)
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        return matches.isEmpty ? null : matches.first;
+      });
+
+  /// Foods logged in the last [days] days, most used first. Foods eaten at
+  /// [mealType] rank ahead of foods eaten at other meals.
+  Future<List<FrequentFood>> loadFrequentFoods({
+    MealType? mealType,
+    int limit = 6,
+    int days = 60,
+  }) =>
+      _serial(() async {
+        final since = DateTime.now().subtract(Duration(days: days));
+        final groups = <int, List<MealEntry>>{};
+        for (final entry in await _readAll()) {
+          if (entry.foodId <= 0 || entry.createdAt.isBefore(since)) continue;
+          groups.putIfAbsent(entry.foodId, () => []).add(entry);
+        }
+        int mealCount(List<MealEntry> items) =>
+            items.where((entry) => entry.mealType == mealType).length;
+        MealEntry latest(List<MealEntry> items) {
+          final preferred = items.where((e) => e.mealType == mealType);
+          final pool = preferred.isEmpty ? items : preferred;
+          return pool
+              .reduce((a, b) => a.createdAt.isAfter(b.createdAt) ? a : b);
+        }
+
+        final ranked = groups.values.toList()
+          ..sort((a, b) {
+            final byMeal = mealCount(b).compareTo(mealCount(a));
+            if (byMeal != 0) return byMeal;
+            final byCount = b.length.compareTo(a.length);
+            if (byCount != 0) return byCount;
+            return latest(b).createdAt.compareTo(latest(a).createdAt);
+          });
+        return ranked
+            .take(limit)
+            .map((items) =>
+                FrequentFood(template: latest(items), count: items.length))
+            .toList();
+      });
+
+  Future<void> add(MealEntry entry) => addAll([entry]);
+
+  Future<void> addAll(List<MealEntry> newEntries) => _serial(() async {
+        if (newEntries.isEmpty) return;
+        final entries = await _readAll();
+        for (final entry in newEntries) {
+          final index = entries.indexWhere((item) => item.id == entry.id);
+          index >= 0 ? entries[index] = entry : entries.add(entry);
+        }
+        await _commit(entries, upserted: newEntries.map((entry) => entry.id));
+      });
+
+  Future<void> update(MealEntry entry) => _serial(() async {
+        final entries = await _readAll();
+        final index = entries.indexWhere((item) => item.id == entry.id);
+        if (index < 0) return;
+        entries[index] = entry;
+        await _commit(entries, upserted: [entry.id]);
+      });
+
+  Future<void> delete(MealEntry entry) => _serial(() async {
+        final entries = await _readAll();
+        final before = entries.length;
+        entries.removeWhere((item) => item.id == entry.id);
+        if (entries.length == before) return;
+        await _commit(entries, deleted: [entry.id]);
+      });
+
+  Future<void> clear() => _serial(() async {
+        _resetCache();
+        final userId = _userId;
+        if (userId == null) {
+          await _preferences.remove(_legacyKey);
+          return;
+        }
+        await _preferences.remove(_userKey(userId));
+        await _preferences.remove('$_dirtyPrefix$userId');
+        await _preferences.remove('$_pendingPrefix$userId');
+      });
+
+  void _resetCache() {
+    _cacheUserId = null;
+    _cache = null;
+    _fetchedAt = null;
+    _failedAt = null;
+  }
+
+  /// Returns a mutable copy of the user's history. The cloud is read at most
+  /// once per [_cacheLifetime] unless [refresh] is set.
+  Future<List<MealEntry>> _readAll({bool refresh = false}) async {
     final userId = _userId;
     if (userId == null) return _loadLocal(_legacyKey);
+    if (_cacheUserId != userId) _resetCache();
 
-    final key = _userKey(userId);
-    final local = await _loadLocal(key);
-    final dirty = await _preferences.getBool('$_dirtyPrefix$userId') ?? false;
-    if (dirty) {
-      try {
-        await _replaceRemote(userId, local);
-        await _markSynced(userId);
-      } catch (_) {}
-      return local;
+    final now = DateTime.now();
+    final fresh =
+        _fetchedAt != null && now.difference(_fetchedAt!) < _cacheLifetime;
+    final recentlyFailed =
+        _failedAt != null && now.difference(_failedAt!) < _retryAfterFailure;
+    if (_cache != null && !refresh && (fresh || recentlyFailed)) {
+      return List.of(_cache!);
     }
 
+    final entries = await _fetch(userId);
+    _cacheUserId = userId;
+    _cache = entries;
+    return List.of(entries);
+  }
+
+  Future<List<MealEntry>> _fetch(String userId) async {
+    final key = _userKey(userId);
+    final local = await _loadLocal(key);
     try {
+      // Local changes must reach the cloud before the cloud copy replaces them.
+      await _flushPending(userId, local);
       final remote = await _loadRemote(userId);
       final migrated =
           await _preferences.getBool('$_migratedPrefix$userId') ?? false;
+      _fetchedAt = DateTime.now();
+      _failedAt = null;
       if (migrated || remote.isNotEmpty) {
         await _writeLocal(key, remote);
         await _preferences.setBool('$_migratedPrefix$userId', true);
@@ -48,90 +198,111 @@ class MealHistoryService {
       final source =
           local.isNotEmpty ? local : await _claimLegacyHistory(userId);
       if (source.isNotEmpty) {
-        await _replaceRemote(userId, source);
+        await _upsertRemote(userId, source);
         await _writeLocal(key, source);
       }
       await _preferences.setBool('$_migratedPrefix$userId', true);
       return source;
     } catch (_) {
+      _failedAt = DateTime.now();
       return local.isNotEmpty ? local : await _loadOwnedLegacyHistory(userId);
     }
   }
 
-  Future<List<MealEntry>> loadDate(String dateKey) async {
-    final entries = await _readAll();
-    return entries.where((entry) => entry.dateKey == dateKey).toList()
-      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
-  }
-
-  Future<MealEntry?> loadLatestDetailedForFood(int foodId) async {
-    final entries = await _readAll();
-    final matches = entries
-        .where((entry) => entry.foodId == foodId && entry.isDetailed)
-        .toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    return matches.isEmpty ? null : matches.first;
-  }
-
-  Future<void> add(MealEntry entry) async {
-    final userId = _userId;
-    final key = userId == null ? _legacyKey : _userKey(userId);
-    final entries = await _readAll();
-    final index = entries.indexWhere((item) => item.id == entry.id);
-    index >= 0 ? entries[index] = entry : entries.add(entry);
+  Future<void> _commit(
+    List<MealEntry> entries, {
+    Iterable<String> upserted = const [],
+    Iterable<String> deleted = const [],
+  }) async {
     _sort(entries);
-    await _writeLocal(key, entries);
-    if (userId != null) await _syncRemoteSnapshot(userId, entries);
-  }
-
-  Future<void> update(MealEntry entry) async {
-    final userId = _userId;
-    final key = userId == null ? _legacyKey : _userKey(userId);
-    final entries = await _readAll();
-    final index = entries.indexWhere((item) => item.id == entry.id);
-    if (index < 0) return;
-    entries[index] = entry;
-    _sort(entries);
-    await _writeLocal(key, entries);
-    if (userId != null) await _syncRemoteSnapshot(userId, entries);
-  }
-
-  Future<void> delete(MealEntry entry) async {
-    final userId = _userId;
-    final key = userId == null ? _legacyKey : _userKey(userId);
-    final entries = await _readAll();
-    var index = entries.indexWhere((item) =>
-        item.id == entry.id &&
-        item.createdAt.isAtSameMomentAs(entry.createdAt));
-    index =
-        index < 0 ? entries.indexWhere((item) => item.id == entry.id) : index;
-    if (index < 0) return;
-    entries.removeAt(index);
-    await _writeLocal(key, entries);
-    if (userId == null) return;
-    await _syncRemoteSnapshot(userId, entries);
-  }
-
-  Future<void> clear() async {
     final userId = _userId;
     if (userId == null) {
-      await _preferences.remove(_legacyKey);
+      await _writeLocal(_legacyKey, entries);
       return;
     }
-    await _preferences.remove(_userKey(userId));
-    await _preferences.remove('$_dirtyPrefix$userId');
+
+    await _writeLocal(_userKey(userId), entries);
+    _cacheUserId = userId;
+    _cache = List.of(entries);
+    await _queuePending(userId, upserted: upserted, deleted: deleted);
+    // The local write is done; the screen does not wait for the upload.
+    unawaited(_serial(() => _pushPending(userId)));
   }
 
-  Future<void> _syncRemoteSnapshot(
-      String userId, List<MealEntry> entries) async {
-    await _preferences.setBool('$_dirtyPrefix$userId', true);
+  Future<void> _pushPending(String userId) async {
+    if (_userId != userId) return;
     try {
-      await _replaceRemote(userId, entries);
+      await _flushPending(userId, _cache ?? await _loadLocal(_userKey(userId)));
       await SyncStatusService.instance.markConnected();
-      await _markSynced(userId);
     } catch (_) {
       SyncStatusService.instance.markFailed();
+      // The change stays in the pending queue and is retried on the next read.
     }
+  }
+
+  Future<void> _flushPending(String userId, List<MealEntry> local) async {
+    final legacyDirty =
+        await _preferences.getBool('$_dirtyPrefix$userId') ?? false;
+    if (legacyDirty) {
+      await _replaceRemote(userId, local);
+      await _preferences.setBool('$_dirtyPrefix$userId', false);
+      await _preferences.remove('$_pendingPrefix$userId');
+      await _preferences.setBool('$_migratedPrefix$userId', true);
+      return;
+    }
+
+    final pending = await _loadPending(userId);
+    if (pending.isEmpty) return;
+    final byId = {for (final entry in local) entry.id: entry};
+    final upserts =
+        pending.upserted.map((id) => byId[id]).whereType<MealEntry>().toList();
+    if (upserts.isNotEmpty) await _upsertRemote(userId, upserts);
+    if (pending.deleted.isNotEmpty) {
+      await Supabase.instance.client
+          .from('meal_entries')
+          .delete()
+          .eq('user_id', userId)
+          .inFilter('id', pending.deleted.toList());
+    }
+    await _preferences.remove('$_pendingPrefix$userId');
+    await _preferences.setBool('$_migratedPrefix$userId', true);
+  }
+
+  Future<_PendingChanges> _loadPending(String userId) async {
+    final source = await _preferences.getString('$_pendingPrefix$userId');
+    if (source == null || source.isEmpty) return _PendingChanges();
+    try {
+      final json = Map<String, dynamic>.from(jsonDecode(source) as Map);
+      return _PendingChanges(
+        upserted: {...(json['upserted'] as List? ?? const []).cast<String>()},
+        deleted: {...(json['deleted'] as List? ?? const []).cast<String>()},
+      );
+    } catch (_) {
+      return _PendingChanges();
+    }
+  }
+
+  Future<void> _queuePending(
+    String userId, {
+    required Iterable<String> upserted,
+    required Iterable<String> deleted,
+  }) async {
+    final pending = await _loadPending(userId);
+    for (final id in upserted) {
+      pending.deleted.remove(id);
+      pending.upserted.add(id);
+    }
+    for (final id in deleted) {
+      pending.upserted.remove(id);
+      pending.deleted.add(id);
+    }
+    await _preferences.setString(
+      '$_pendingPrefix$userId',
+      jsonEncode({
+        'upserted': pending.upserted.toList(),
+        'deleted': pending.deleted.toList(),
+      }),
+    );
   }
 
   Future<List<MealEntry>> _loadRemote(String userId) async {
@@ -148,6 +319,13 @@ class MealHistoryService {
     return entries;
   }
 
+  Future<void> _upsertRemote(String userId, List<MealEntry> entries) =>
+      Supabase.instance.client
+          .from('meal_entries')
+          .upsert(entries.map((entry) => _toRemote(userId, entry)).toList());
+
+  /// Makes the cloud match [entries] exactly. Only used to finish a snapshot
+  /// left by the previous sync strategy.
   Future<void> _replaceRemote(
     String userId,
     List<MealEntry> entries,
@@ -159,17 +337,19 @@ class MealHistoryService {
     }
 
     // Upsert first. If this fails, existing cloud history remains intact.
-    await table
-        .upsert(entries.map((entry) => _toRemote(userId, entry)).toList());
+    await _upsertRemote(userId, entries);
 
     // Remove stale rows only after every desired row is safely in the cloud.
     final desiredIds = entries.map((entry) => entry.id).toSet();
     final remoteRows = await table.select('id').eq('user_id', userId);
-    for (final row in remoteRows as List) {
-      final id = (row as Map)['id']?.toString();
-      if (id != null && !desiredIds.contains(id)) {
-        await table.delete().eq('user_id', userId).eq('id', id);
-      }
+    final staleIds = [
+      for (final row in remoteRows as List)
+        if ((row as Map)['id']?.toString() case final id?
+            when !desiredIds.contains(id))
+          id,
+    ];
+    if (staleIds.isNotEmpty) {
+      await table.delete().eq('user_id', userId).inFilter('id', staleIds);
     }
   }
 
@@ -191,6 +371,7 @@ class MealHistoryService {
         'has_sugar_data': entry.hasSugarData,
         'has_sodium_data': entry.hasSodiumData,
         'created_at': entry.createdAt.toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
         'components': entry.components.map((item) => item.toJson()).toList(),
       };
 
@@ -261,15 +442,21 @@ class MealHistoryService {
         jsonEncode(entries.map((entry) => entry.toJson()).toList()),
       );
 
-  Future<void> _markSynced(String userId) async {
-    await _preferences.setBool('$_dirtyPrefix$userId', false);
-    await _preferences.setBool('$_migratedPrefix$userId', true);
-  }
-
   void _sort(List<MealEntry> entries) {
     entries.sort((a, b) {
       final byDate = a.dateKey.compareTo(b.dateKey);
       return byDate != 0 ? byDate : a.createdAt.compareTo(b.createdAt);
     });
   }
+}
+
+class _PendingChanges {
+  _PendingChanges({Set<String>? upserted, Set<String>? deleted})
+      : upserted = upserted ?? {},
+        deleted = deleted ?? {};
+
+  final Set<String> upserted;
+  final Set<String> deleted;
+
+  bool get isEmpty => upserted.isEmpty && deleted.isEmpty;
 }

@@ -1,153 +1,154 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/food_item.dart';
 import '../models/food_serving.dart';
+import 'food_search.dart';
 
+/// The food catalogue is small (about 1,200 foods), so it is downloaded once,
+/// kept on the device and searched locally. Local search can match Thai
+/// names in any word order and without tone marks, which PostgREST ILIKE
+/// cannot, and it keeps working offline.
 class FoodCatalogService {
   FoodCatalogService._();
 
   static final instance = FoodCatalogService._();
 
+  static const _cacheKey = 'fitfast_food_catalog_v2';
+  static const _cacheSavedAtKey = 'fitfast_food_catalog_v2_saved_at';
+  static const _refreshAfter = Duration(hours: 24);
+  static const _pageSize = 1000;
+  // Tried in order, so older databases without the newer columns still load.
+  static const _columnSets = [
+    'id, food_code, name_th, name_en, common_name_th, search_aliases, '
+        'image_url, image_credit, energy_kcal_per_100g, protein_g_per_100g, '
+        'carbs_g_per_100g, fat_g_per_100g, sugar_g_per_100g, '
+        'sodium_mg_per_100g, edible_portion_percent, food_servings(*)',
+    '*, food_servings(*)',
+    '*',
+  ];
+
+  // Created on first use, so looking up servings never needs local storage.
+  late final SharedPreferencesAsync _preferences = SharedPreferencesAsync();
   SupabaseClient get _client => Supabase.instance.client;
-  // Optional image_url remains compatible with catalogs before the image migration.
-  static const _foodColumns = '*';
 
-  Future<List<FoodItem>> search(String query) async {
-    final trimmed = query.trim();
-    dynamic request = _client
-        .from('foods_catalog')
-        .select(_foodColumns)
-        .eq('is_usable', true);
+  FoodSearch? _search;
+  DateTime? _loadedAt;
+  Future<FoodSearch>? _loading;
 
-    if (trimmed.isNotEmpty) {
-      final variants = _searchVariants(trimmed);
-      final filters = <String>[
-        for (final variant in variants) ...[
-          'name_th.ilike.%$variant%',
-          'name_en.ilike.%$variant%',
-        ],
-      ];
-      request = request.or(filters.join(','));
-    }
-
-    final rows = await request.order('name_th').limit(100);
-    var foods = (rows as List)
-        .map((row) => FoodItem.fromJson(Map<String, dynamic>.from(row as Map)))
-        .toList();
-    // A small catalogue can safely use a client-side fuzzy fallback. This is
-    // only requested when the normal indexed search finds nothing.
-    if (foods.isEmpty && trimmed.length >= 3) {
-      final fallbackRows = await _client
-          .from('foods_catalog')
-          .select(_foodColumns)
-          .eq('is_usable', true)
-          .order('name_th')
-          .limit(1500);
-      foods = (fallbackRows as List)
-          .map(
-              (row) => FoodItem.fromJson(Map<String, dynamic>.from(row as Map)))
-          .where((food) => _score(food, trimmed) > 0)
-          .toList();
-    }
-    if (trimmed.isNotEmpty) {
-      foods.sort((a, b) => _score(b, trimmed).compareTo(_score(a, trimmed)));
-    }
-    return foods.take(50).toList();
+  Future<List<FoodItem>> search(
+    String query, {
+    Set<int> preferIds = const {},
+  }) async {
+    final search = await _catalog();
+    return query.trim().isEmpty
+        ? search.suggestions(preferIds: preferIds)
+        : search.search(query, preferIds: preferIds);
   }
 
-  /// Returns safe alternatives for common Thai spellings. The server still
-  /// performs the broad match; scoring below puts the closest result first.
-  List<String> _searchVariants(String query) {
-    final normalized = _normalize(query);
-    final variants = <String>{normalized};
-    const alternatives = <String, String>{
-      'กะเพรา': 'กระเพรา',
-      'กระเพรา': 'กะเพรา',
-    };
-    for (final entry in alternatives.entries) {
-      if (normalized.contains(entry.key)) {
-        variants.add(normalized.replaceAll(entry.key, entry.value));
-      }
-    }
-    return variants.where((value) => value.isNotEmpty).toList();
+  /// Forgets the in-memory copy so the next search downloads the catalogue.
+  void invalidate() {
+    _search = null;
+    _loadedAt = null;
   }
 
-  int _score(FoodItem food, String query) {
-    final variants = _searchVariants(query);
-    final thai = _normalize(food.nameTh);
-    final english = _normalize(food.nameEn ?? '');
-    var best = 0;
-    for (final term in variants) {
-      for (final name in [thai, english]) {
-        if (name == term) {
-          best = best < 1000 ? 1000 : best;
-        } else if (name.startsWith(term)) {
-          best = best < 800 ? 800 : best;
-        } else if (name.split(' ').any((word) => word.startsWith(term))) {
-          best = best < 650 ? 650 : best;
-        } else if (name.contains(term)) {
-          best = best < 500 ? 500 : best;
-        } else {
-          final compactTerm = term.replaceAll(' ', '');
-          final candidates = <String>{
-            name.replaceAll(' ', ''),
-            ...name.split(' '),
-          };
-          for (final candidate in candidates) {
-            final distance = _editDistance(compactTerm, candidate);
-            final allowed = compactTerm.length <= 5 ? 1 : 2;
-            if (distance <= allowed) {
-              final fuzzyScore = 350 - (distance * 40);
-              best = best < fuzzyScore ? fuzzyScore : best;
-            }
-          }
+  Future<FoodSearch> _catalog() {
+    final loaded = _search;
+    final stale = _loadedAt == null ||
+        DateTime.now().difference(_loadedAt!) > _refreshAfter;
+    if (loaded != null) {
+      if (stale) unawaited(_refresh().then<void>((_) {}, onError: (_) {}));
+      return Future.value(loaded);
+    }
+    return _loading ??= _loadInitial().whenComplete(() => _loading = null);
+  }
+
+  Future<FoodSearch> _loadInitial() async {
+    final cached = await _readCache();
+    if (cached != null) {
+      _search = FoodSearch(cached.foods);
+      _loadedAt = cached.savedAt;
+      // Show the saved copy at once, and pick up catalogue edits (new foods,
+      // names or units) in the background once per app session.
+      unawaited(_refresh().then<void>((_) {}, onError: (_) {}));
+      return _search!;
+    }
+    return _refresh();
+  }
+
+  Future<FoodSearch> _refresh() async {
+    final foods = await _download();
+    _search = FoodSearch(foods);
+    _loadedAt = DateTime.now();
+    await _writeCache(foods);
+    return _search!;
+  }
+
+  Future<List<FoodItem>> _download() async {
+    PostgrestException? lastError;
+    for (final columns in _columnSets) {
+      try {
+        final foods = <FoodItem>[];
+        for (var from = 0;; from += _pageSize) {
+          final rows = await _client
+              .from('foods_catalog')
+              .select(columns)
+              .eq('is_usable', true)
+              .order('id')
+              .range(from, from + _pageSize - 1);
+          foods.addAll((rows as List).map((row) =>
+              FoodItem.fromJson(Map<String, dynamic>.from(row as Map))));
+          if (rows.length < _pageSize) break;
         }
+        return foods;
+      } on PostgrestException catch (error) {
+        lastError = error;
       }
     }
-    // Prefer concise names when two foods match in the same way.
-    return best - food.nameTh.length.clamp(0, 100).toInt();
+    throw lastError!;
   }
 
-  String _normalize(String value) => value
-      .toLowerCase()
-      .replaceAll(RegExp(r'[,%.()\[\]{}]'), ' ')
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
-
-  int _editDistance(String a, String b) {
-    if (a == b) return 0;
-    if (a.isEmpty) return b.length;
-    if (b.isEmpty) return a.length;
-    var previous = List<int>.generate(b.length + 1, (index) => index);
-    for (var i = 1; i <= a.length; i++) {
-      final current = List<int>.filled(b.length + 1, 0)..[0] = i;
-      for (var j = 1; j <= b.length; j++) {
-        final substitution = previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1);
-        current[j] = [
-          current[j - 1] + 1,
-          previous[j] + 1,
-          substitution,
-        ].reduce((left, right) => left < right ? left : right);
-      }
-      previous = current;
+  Future<({List<FoodItem> foods, DateTime savedAt})?> _readCache() async {
+    try {
+      final source = await _preferences.getString(_cacheKey);
+      final savedAt = DateTime.tryParse(
+          await _preferences.getString(_cacheSavedAtKey) ?? '');
+      if (source == null || savedAt == null) return null;
+      final foods = (jsonDecode(source) as List)
+          .map((item) =>
+              FoodItem.fromJson(Map<String, dynamic>.from(item as Map)))
+          .toList();
+      return foods.isEmpty ? null : (foods: foods, savedAt: savedAt);
+    } catch (_) {
+      return null;
     }
-    return previous[b.length];
+  }
+
+  Future<void> _writeCache(List<FoodItem> foods) async {
+    try {
+      await _preferences.setString(
+          _cacheKey, jsonEncode([for (final food in foods) food.toJson()]));
+      await _preferences.setString(
+          _cacheSavedAtKey, DateTime.now().toIso8601String());
+    } catch (_) {
+      // The catalogue still works from memory for this session.
+    }
   }
 
   Future<List<FoodServing>> loadVerifiedServings(int foodId) async {
     try {
+      // '*' keeps working before and after the phase 2 serving columns exist.
       final rows = await _client
           .from('food_servings')
-          .select('id, food_id, label, grams')
+          .select()
           .eq('food_id', foodId)
           .eq('verified', true)
-          .gt('grams', 0)
-          .order('grams');
-      return (rows as List)
-          .map((row) => FoodServing.fromJson(
-                Map<String, dynamic>.from(row as Map),
-              ))
-          .toList();
+          .gt('grams', 0);
+      return FoodServing.sorted((rows as List).map((row) =>
+          FoodServing.fromJson(Map<String, dynamic>.from(row as Map))));
     } catch (_) {
       // The gram input remains available while the optional serving table
       // has not been created or has no verified rows.
