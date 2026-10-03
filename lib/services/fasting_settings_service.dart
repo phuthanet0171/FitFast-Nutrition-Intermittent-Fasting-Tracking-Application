@@ -5,7 +5,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/fasting_settings.dart';
 import 'fasting_session_service.dart';
-import 'sync_status_service.dart';
 
 class FastingSettingsService {
   FastingSettingsService._();
@@ -87,10 +86,8 @@ class FastingSettingsService {
     try {
       await _upsertRemote(userId, settings);
       await FastingSessionService.instance.syncCurrentSchedule(settings);
-      await SyncStatusService.instance.markConnected();
       await _markSynced(userId);
     } catch (_) {
-      SyncStatusService.instance.markFailed();
       // Keep the setting locally and retry when it is loaded again.
     }
   }
@@ -106,10 +103,8 @@ class FastingSettingsService {
     await _preferences.setString('$_pendingPrefix$userId', 'delete');
     try {
       await _deleteRemote(userId);
-      await SyncStatusService.instance.markConnected();
       await _markSynced(userId);
     } catch (_) {
-      SyncStatusService.instance.markFailed();
       // Keep the pending deletion and retry the next time it is loaded.
     }
   }

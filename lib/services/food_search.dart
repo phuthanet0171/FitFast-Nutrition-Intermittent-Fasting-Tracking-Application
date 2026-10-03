@@ -11,6 +11,15 @@ class FoodSearch {
       : _entries = [for (final food in foods) _Entry(food)];
 
   final List<_Entry> _entries;
+  late final Map<int, FoodItem> _byId = {
+    for (final entry in _entries) entry.food.id: entry.food,
+  };
+  late final Map<String, FoodItem> _byCode = {
+    for (final entry in _entries) entry.food.foodCode: entry.food,
+  };
+
+  FoodItem? byId(int id) => _byId[id];
+  FoodItem? byCode(String code) => _byCode[code];
 
   static const resultLimit = 50;
 

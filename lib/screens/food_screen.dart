@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 
 import '../models/health_result.dart';
 import '../models/meal_entry.dart';
+import '../services/food_catalog_service.dart';
 import '../services/food_preference_service.dart';
+import '../services/household_units.dart';
 import '../services/meal_history_service.dart';
 import '../services/nutrition_history_service.dart';
 import '../theme/app_theme.dart';
@@ -60,6 +62,10 @@ class _FoodScreenState extends State<FoodScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _load();
     _scheduleMidnightRefresh();
+    // Portions are shown in household units, which come from the catalogue.
+    FoodCatalogService.instance.warmUp().then((loaded) {
+      if (loaded && mounted) setState(() {});
+    });
   }
 
   @override
@@ -493,12 +499,8 @@ class _MealCard extends StatelessWidget {
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 2),
                       Text(
-                        [
-                          if (entry.isDetailed)
-                            '${entry.components.length} ส่วนประกอบ',
-                          '${entry.grams.round()} ก.',
-                          '${entry.calories.round()} kcal',
-                        ].join(' · '),
+                        '${portionText(entry)} · '
+                        '${entry.calories.round()} kcal',
                         style: const TextStyle(
                             color: AppColors.muted, fontSize: 13),
                       ),
@@ -559,7 +561,7 @@ class _MealCard extends StatelessWidget {
                       '${food.template.calories.round()}',
                     ),
                     tooltip: '${food.template.foodName} '
-                        '${food.template.grams.round()} ก. '
+                        '${portionText(food.template)} '
                         '${food.template.calories.round()} kcal',
                     onPressed: () => onQuickAdd(food),
                   ),
@@ -574,4 +576,24 @@ class _MealCard extends StatelessWidget {
 
   static String _shortName(String name) =>
       name.length <= 18 ? name : '${name.substring(0, 17)}…';
+}
+
+/// How much was eaten, in the words used when logging it: "2 ฟอง",
+/// "1 จาน · ข้าวน้อย · ไข่ดาว 2 ฟอง" or "3 ส่วนประกอบ".
+String portionText(MealEntry entry) {
+  if (entry.plateOrder != null) {
+    return [
+      for (final (index, component) in entry.components.indexed)
+        index == 0
+            ? component.portion ?? ''
+            : '${component.foodName} ${component.portion ?? ''}'.trim(),
+    ].join(' · ');
+  }
+  if (entry.isDetailed) return '${entry.components.length} ส่วนประกอบ';
+  final food = FoodCatalogService.instance.cachedFood(entry.foodId);
+  return HouseholdUnits.describe(
+      food != null && food.foodCode == entry.foodCode
+          ? food
+          : entry.toFoodItem(),
+      entry.grams);
 }

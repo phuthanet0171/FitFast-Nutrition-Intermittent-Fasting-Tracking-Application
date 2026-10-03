@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/weight_entry.dart';
-import 'sync_status_service.dart';
 
 class WeightHistoryService {
   WeightHistoryService._();
@@ -88,11 +87,9 @@ class WeightHistoryService {
     await _preferences.setBool('$_dirtyPrefix$userId', true);
     try {
       await _upsertRemote(userId, savedEntry);
-      await SyncStatusService.instance.markConnected();
       await _preferences.setBool('$_dirtyPrefix$userId', false);
       await _preferences.setBool('$_migratedPrefix$userId', true);
     } catch (_) {
-      SyncStatusService.instance.markFailed();
       // The local change is retained and retried on the next load.
     }
   }
@@ -123,11 +120,9 @@ class WeightHistoryService {
           .delete()
           .eq('user_id', userId)
           .eq('id', id);
-      await SyncStatusService.instance.markConnected();
       await _preferences.setBool('$_dirtyPrefix$userId', false);
       await _preferences.setBool('$_migratedPrefix$userId', true);
     } catch (_) {
-      SyncStatusService.instance.markFailed();
       // The complete local state will replace the remote state on retry.
     }
   }

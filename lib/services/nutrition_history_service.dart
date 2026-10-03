@@ -5,7 +5,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/daily_nutrition_record.dart';
 import '../models/health_result.dart';
-import 'sync_status_service.dart';
 
 class NutritionHistoryService {
   NutritionHistoryService._();
@@ -73,11 +72,9 @@ class NutritionHistoryService {
     await _queuePending(userId, record);
     try {
       await _upsertRemote(userId, record);
-      await SyncStatusService.instance.markConnected();
       await _removePending(userId, record.dateKey);
       await _preferences.setBool('$_migratedPrefix$userId', true);
     } catch (_) {
-      SyncStatusService.instance.markFailed();
       // Keep this date in the pending queue and retry on the next load.
     }
   }

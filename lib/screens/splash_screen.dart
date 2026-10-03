@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../widgets/brand_backdrop.dart';
+import '../widgets/fitfast_logo.dart';
 import 'auth_screen.dart';
 import 'authenticated_home_screen.dart';
 
+/// A short branded start. The saved session is read synchronously, so the
+/// screen only stays for its entrance animation (well under a second).
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
+
+  static const duration = Duration(milliseconds: 700);
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -13,23 +20,31 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late final Animation<double> _fade;
-  late final Animation<double> _scale;
+  late final AnimationController _controller =
+      AnimationController(vsync: this, duration: SplashScreen.duration);
+  late final Animation<double> _fade =
+      CurvedAnimation(parent: _controller, curve: const Interval(0, .6));
+  late final Animation<double> _scale = Tween<double>(begin: .92, end: 1)
+      .animate(
+          CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    );
-    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
-    _scale = Tween<double>(begin: .88, end: 1).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOutBack),
-    );
-    _controller.forward();
-    _prepareApp();
+    _controller.forward().whenComplete(_open);
+  }
+
+  void _open() {
+    if (!mounted) return;
+    final destination = Supabase.instance.client.auth.currentSession == null
+        ? const AuthScreen()
+        : const AuthenticatedHomeScreen();
+    Navigator.of(context).pushReplacement(PageRouteBuilder(
+      pageBuilder: (_, animation, secondaryAnimation) => destination,
+      transitionsBuilder: (_, animation, secondaryAnimation, child) =>
+          FadeTransition(opacity: animation, child: child),
+      transitionDuration: const Duration(milliseconds: 300),
+    ));
   }
 
   @override
@@ -38,121 +53,42 @@ class _SplashScreenState extends State<SplashScreen>
     super.dispose();
   }
 
-  Future<void> _prepareApp() async {
-    await Future<void>.delayed(const Duration(seconds: 5));
-    if (!mounted) return;
-    final destination = Supabase.instance.client.auth.currentSession == null
-        ? const AuthScreen()
-        : const AuthenticatedHomeScreen();
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (_, animation, secondaryAnimation) => destination,
-        transitionsBuilder: (_, animation, secondaryAnimation, child) =>
-            FadeTransition(opacity: animation, child: child),
-        transitionDuration: const Duration(milliseconds: 450),
-      ),
-    );
-  }
-
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF15977A), Color(0xFF08705C)],
-          ),
-        ),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            const Positioned(
-              top: -110,
-              right: -90,
-              child: _SplashOrb(size: 280, opacity: .08),
-            ),
-            const Positioned(
-              bottom: -130,
-              left: -100,
-              child: _SplashOrb(size: 310, opacity: .07),
-            ),
-            SafeArea(
+  Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle.light,
+        child: Scaffold(
+          backgroundColor: BrandBackdrop.middle,
+          body: BrandBackdrop(
+            child: Center(
               child: FadeTransition(
                 opacity: _fade,
-                child: Column(
-                  children: [
-                    const Spacer(),
-                    ScaleTransition(
-                      scale: _scale,
-                      child: Container(
-                        width: 116,
-                        height: 116,
-                        padding: const EdgeInsets.all(18),
-                        decoration: BoxDecoration(
+                child: ScaleTransition(
+                  scale: _scale,
+                  child: const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FitFastLogo(size: 112, shadow: true),
+                      SizedBox(height: 22),
+                      Text(
+                        'FitFast',
+                        style: TextStyle(
                           color: Colors.white,
-                          borderRadius: BorderRadius.circular(34),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: .16),
-                              blurRadius: 36,
-                              offset: const Offset(0, 18),
-                            ),
-                          ],
-                        ),
-                        child: Image.asset(
-                          'assets/icons/fitfast_launcher_foreground.png',
-                          fit: BoxFit.contain,
-                          semanticLabel: 'FitFast',
+                          fontSize: 34,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: -.8,
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 24),
-                    const Text(
-                      'FitFast',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 38,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: -1.3,
+                      SizedBox(height: 4),
+                      Text(
+                        'กินดี อดเป็น สุขภาพดี',
+                        style: TextStyle(color: Colors.white70, fontSize: 15),
                       ),
-                    ),
-                    const Spacer(),
-                    const SizedBox(
-                      width: 26,
-                      height: 26,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        backgroundColor: Color(0x40FFFFFF),
-                        strokeWidth: 2.6,
-                      ),
-                    ),
-                    const SizedBox(height: 42),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SplashOrb extends StatelessWidget {
-  const _SplashOrb({required this.size, required this.opacity});
-
-  final double size;
-  final double opacity;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: Colors.white.withValues(alpha: opacity),
+          ),
         ),
       );
 }

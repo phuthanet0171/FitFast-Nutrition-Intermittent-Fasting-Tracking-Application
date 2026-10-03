@@ -12,7 +12,15 @@ class FoodPhoto extends StatelessWidget {
   final double size;
 
   static (IconData, Color) groupStyle(String? foodCode) {
-    final group = (foodCode == null || foodCode.isEmpty) ? '' : foodCode[0];
+    final code = foodCode ?? '';
+    // DoH dish table codes: DOH11 dishes, DOH12 desserts, DOH14 snacks.
+    final group = code.startsWith('DOH12')
+        ? 'M'
+        : code.startsWith('DOH')
+            ? 'T'
+            : code.isEmpty
+                ? ''
+                : code[0];
     return switch (group) {
       'A' => (Icons.rice_bowl_rounded, const Color(0xFFC9A227)),
       'B' => (Icons.grass_rounded, const Color(0xFF9C7A4E)),

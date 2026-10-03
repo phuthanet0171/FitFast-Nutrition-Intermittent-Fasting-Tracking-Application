@@ -5,7 +5,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/meal_entry.dart';
-import 'sync_status_service.dart';
 
 /// A food the user logs often, with the latest entry as its portion template.
 class FrequentFood {
@@ -233,9 +232,7 @@ class MealHistoryService {
     if (_userId != userId) return;
     try {
       await _flushPending(userId, _cache ?? await _loadLocal(_userKey(userId)));
-      await SyncStatusService.instance.markConnected();
     } catch (_) {
-      SyncStatusService.instance.markFailed();
       // The change stays in the pending queue and is retried on the next read.
     }
   }

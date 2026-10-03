@@ -1,4 +1,5 @@
 import 'food_item.dart';
+import 'plate_order.dart';
 
 enum MealType { breakfast, lunch, dinner, snack }
 
@@ -67,6 +68,13 @@ class MealEntry {
   final List<MealComponent> components;
 
   bool get isDetailed => components.isNotEmpty;
+
+  /// The plate choices when this entry was logged as an ordered rice plate.
+  PlateOrder? get plateOrder {
+    if (components.isEmpty) return null;
+    final base = components.first;
+    return base.foodId == foodId ? base.order : null;
+  }
 
   MealEntry copyWith({
     String? id,
@@ -240,6 +248,8 @@ class MealComponent {
     required this.fatGPer100g,
     required this.sugarGPer100g,
     required this.sodiumMgPer100g,
+    this.portion,
+    this.order,
   });
 
   final int foodId;
@@ -253,6 +263,13 @@ class MealComponent {
   final double? sugarGPer100g;
   final double? sodiumMgPer100g;
 
+  /// The amount as the user chose it, e.g. "2 ฟอง" or "1 จาน · ข้าวน้อย".
+  final String? portion;
+
+  /// Set on the dish itself when the plate was adjusted the way it was
+  /// ordered (less rice, extra, ...), so editing can show those choices.
+  final PlateOrder? order;
+
   double get _factor => grams / 100;
   double get calories => energyKcalPer100g * _factor;
   double get protein => proteinGPer100g * _factor;
@@ -263,7 +280,9 @@ class MealComponent {
   bool get hasSugarData => sugarGPer100g != null;
   bool get hasSodiumData => sodiumMgPer100g != null;
 
-  factory MealComponent.fromFood(FoodItem food, double grams) => MealComponent(
+  factory MealComponent.fromFood(FoodItem food, double grams,
+          {String? portion, PlateOrder? order}) =>
+      MealComponent(
         foodId: food.id,
         foodCode: food.foodCode,
         foodName: food.displayName,
@@ -274,6 +293,8 @@ class MealComponent {
         fatGPer100g: food.fatGPer100g,
         sugarGPer100g: food.sugarGPer100g,
         sodiumMgPer100g: food.sodiumMgPer100g,
+        portion: portion,
+        order: order,
       );
 
   FoodItem toFoodItem() => FoodItem(
@@ -300,6 +321,8 @@ class MealComponent {
         'fatGPer100g': fatGPer100g,
         'sugarGPer100g': sugarGPer100g,
         'sodiumMgPer100g': sodiumMgPer100g,
+        if (portion != null) 'portion': portion,
+        if (order != null) 'order': order!.toJson(),
       };
 
   factory MealComponent.fromJson(Map<String, dynamic> json) {
@@ -316,6 +339,10 @@ class MealComponent {
       fatGPer100g: number('fatGPer100g'),
       sugarGPer100g: optional('sugarGPer100g'),
       sodiumMgPer100g: optional('sodiumMgPer100g'),
+      portion: json['portion'] as String?,
+      order: json['order'] is Map
+          ? PlateOrder.fromJson(Map<String, dynamic>.from(json['order'] as Map))
+          : null,
     );
   }
 }

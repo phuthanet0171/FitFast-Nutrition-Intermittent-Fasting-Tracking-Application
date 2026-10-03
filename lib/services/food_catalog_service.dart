@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -53,6 +54,38 @@ class FoodCatalogService {
   void invalidate() {
     _search = null;
     _loadedAt = null;
+  }
+
+  /// The catalogue copy of a food when the catalogue is already loaded.
+  /// Logged entries keep only a nutrient snapshot, so screens use this to
+  /// find the food's household units again.
+  FoodItem? cachedFood(int id) => _search?.byId(id);
+
+  /// Loads the catalogue in the background; screens that show logged foods
+  /// call this so [cachedFood] works without a search first.
+  Future<bool> warmUp() async {
+    try {
+      await _catalog();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// A food by its catalogue code, e.g. "A11" for ข้าวสวย, or null when the
+  /// catalogue cannot be loaded.
+  Future<FoodItem?> foodByCode(String code) async {
+    try {
+      return (await _catalog()).byCode(code);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @visibleForTesting
+  void debugSetFoods(List<FoodItem> foods) {
+    _search = FoodSearch(foods);
+    _loadedAt = DateTime.now();
   }
 
   Future<FoodSearch> _catalog() {

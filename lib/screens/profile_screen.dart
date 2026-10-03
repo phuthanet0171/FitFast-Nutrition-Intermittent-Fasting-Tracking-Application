@@ -11,7 +11,6 @@ import '../services/health_profile_service.dart';
 import '../services/meal_history_service.dart';
 import '../services/notification_service.dart';
 import '../services/nutrition_history_service.dart';
-import '../services/sync_status_service.dart';
 import '../services/weight_history_service.dart';
 import '../theme/app_theme.dart';
 import 'auth_screen.dart';
@@ -48,9 +47,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     String? accountUsername;
     try {
       accountUsername = await CloudProfileService.instance.loadUsername();
-      await SyncStatusService.instance.markConnected();
     } catch (_) {
-      SyncStatusService.instance.markFailed();
+      // Offline: the profile still opens, without the account username.
     }
     if (!mounted) return;
     setState(() {
@@ -110,6 +108,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
     );
     if (confirmed != true) return;
+    // Reminders belong to this account's fasting plan; they are scheduled
+    // again when someone signs in.
+    try {
+      await NotificationService.instance.cancelFastingReminders();
+    } catch (_) {
+      // Signing out must still work if the notification plugin fails.
+    }
     await Supabase.instance.client.auth.signOut();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
@@ -356,6 +361,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       await NutritionHistoryService.instance.clear();
       await FoodPreferenceService.instance.clear();
       await AppSettingsService.instance.clear();
+      // The account no longer exists on the server, so only the session
+      // saved on this device is removed.
+      await Supabase.instance.client.auth.signOut(scope: SignOutScope.local);
       if (!mounted) return;
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const AuthScreen()),
@@ -584,11 +592,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(20, 12, 20, 30),
             children: [
-              Text('Cloud และการบันทึก',
-                  style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 10),
-              const _CloudStatusCard(),
-              const SizedBox(height: 22),
               Text('บัญชี', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 10),
               Card(
@@ -669,144 +672,6 @@ class _SettingsScreenState extends State<_SettingsScreen> {
             ],
           ),
         ),
-      );
-}
-
-class _CloudStatusCard extends StatefulWidget {
-  const _CloudStatusCard();
-
-  @override
-  State<_CloudStatusCard> createState() => _CloudStatusCardState();
-}
-
-class _CloudStatusCardState extends State<_CloudStatusCard> {
-  @override
-  void initState() {
-    super.initState();
-    SyncStatusService.instance.restore();
-  }
-
-  String _lastConnected(DateTime? date) {
-    if (date == null) return 'ยังไม่เคยเชื่อมต่อสำเร็จ';
-    final local = date.toLocal();
-    final day = local.day.toString().padLeft(2, '0');
-    final month = local.month.toString().padLeft(2, '0');
-    final hour = local.hour.toString().padLeft(2, '0');
-    final minute = local.minute.toString().padLeft(2, '0');
-    return 'เชื่อมต่อล่าสุดเมื่อ $day/$month/${local.year + 543} $hour:$minute น.';
-  }
-
-  Future<bool> _retry() async {
-    final connected = await SyncStatusService.instance.checkConnection();
-    if (!connected) return false;
-
-    final now = DateTime.now();
-    await Future.wait([
-      HealthProfileService.instance.load(),
-      WeightHistoryService.instance.loadAll(),
-      MealHistoryService.instance.loadDate(
-        NutritionHistoryService.dateKey(now),
-      ),
-      NutritionHistoryService.instance.load(now),
-      FastingSettingsService.instance.load(),
-      FoodPreferenceService.instance.loadFavorites(),
-      FoodPreferenceService.instance.loadRecent(),
-    ]);
-    return SyncStatusService.instance.status.value.state !=
-        CloudSyncState.failed;
-  }
-
-  @override
-  Widget build(BuildContext context) => ValueListenableBuilder<SyncStatus>(
-        valueListenable: SyncStatusService.instance.status,
-        builder: (context, status, _) {
-          final checking = status.state == CloudSyncState.checking;
-          final failed = status.state == CloudSyncState.failed;
-          return Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 42,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: failed ? AppColors.orangeSoft : AppColors.mint,
-                          borderRadius: BorderRadius.circular(13),
-                        ),
-                        child: checking
-                            ? const Padding(
-                                padding: EdgeInsets.all(11),
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : Icon(
-                                failed
-                                    ? Icons.cloud_off_outlined
-                                    : Icons.cloud_done_outlined,
-                                color: failed
-                                    ? AppColors.orange
-                                    : AppColors.tealDark,
-                              ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              checking
-                                  ? 'กำลังเชื่อมต่อ...'
-                                  : failed
-                                      ? 'บันทึกแล้ว รอเชื่อมต่อ'
-                                      : 'บันทึกแล้ว',
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w800),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              _lastConnected(status.lastConnectedAt),
-                              style: const TextStyle(
-                                color: AppColors.muted,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: checking
-                          ? null
-                          : () async {
-                              final connected = await _retry();
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(connected
-                                      ? 'เชื่อมต่อ Supabase สำเร็จแล้ว'
-                                      : 'ยังเชื่อมต่อไม่ได้ กรุณาตรวจอินเทอร์เน็ต'),
-                                  backgroundColor: connected
-                                      ? AppColors.teal
-                                      : AppColors.orange,
-                                ),
-                              );
-                            },
-                      icon: const Icon(Icons.refresh_rounded),
-                      label: const Text('ลองเชื่อมต่ออีกครั้ง'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
       );
 }
 

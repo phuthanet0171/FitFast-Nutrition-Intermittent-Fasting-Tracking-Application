@@ -30,6 +30,10 @@ class FoodServing {
   /// The unit name without a leading "1", e.g. "1 จาน" becomes "จาน".
   String get noun => label.replaceFirst(RegExp(r'^1\s*'), '');
 
+  /// The unit name without details in brackets, e.g. "แก้ว (240 มล.)"
+  /// becomes "แก้ว".
+  String get shortNoun => noun.replaceAll(RegExp(r'\s*\(.*\)'), '').trim();
+
   bool get hasSizeRange =>
       gramsMin != null &&
       gramsMax != null &&

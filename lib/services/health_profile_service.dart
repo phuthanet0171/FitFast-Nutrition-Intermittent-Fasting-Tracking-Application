@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/health_profile.dart';
-import 'sync_status_service.dart';
 
 class HealthProfileService {
   HealthProfileService._();
@@ -122,9 +121,7 @@ class HealthProfileService {
         'weight_goal': profile.weightGoal,
         'updated_at': profile.updatedAt.toUtc().toIso8601String(),
       }, onConflict: 'id');
-      await SyncStatusService.instance.markConnected();
     } catch (_) {
-      SyncStatusService.instance.markFailed();
       // Local data remains available and will be retried on the next load.
     }
   }

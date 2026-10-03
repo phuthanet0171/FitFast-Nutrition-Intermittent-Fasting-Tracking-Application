@@ -4,11 +4,16 @@ import '../models/food_item.dart';
 import '../models/food_serving.dart';
 import '../models/health_result.dart';
 import '../models/meal_entry.dart';
+import '../models/plate_order.dart';
 import '../services/food_catalog_service.dart';
+import '../services/household_units.dart';
+import '../services/plate_order_calculator.dart';
 import '../theme/app_theme.dart';
 import '../widgets/food_photo.dart';
 import 'food_components_screen.dart';
 
+/// Chooses how much of one food was eaten, in household units (ฟอง, ทัพพี,
+/// จาน) rather than grams, and for rice plates the way it was ordered.
 class FoodAmountScreen extends StatefulWidget {
   const FoodAmountScreen({
     super.key,
@@ -28,6 +33,8 @@ class FoodAmountScreen extends StatefulWidget {
   final MealType initialMealType;
   final String dateKey;
   final MealEntry? existingEntry;
+
+  /// Choosing one component of a dish: only the amount is asked for.
   final bool draft;
   final double? initialGrams;
   final HealthResult? healthResult;
@@ -37,119 +44,188 @@ class FoodAmountScreen extends StatefulWidget {
 }
 
 class _FoodAmountScreenState extends State<FoodAmountScreen> {
-  static const _sizeLabels = ['เล็ก', 'ปกติ', 'ใหญ่'];
+  final _quantity = TextEditingController();
 
-  late final TextEditingController _quantity;
-  List<FoodServing> _units = [];
+  /// Nutrients per 100 g. For an edited entry this is its saved snapshot,
+  /// or the catalogue dish when an ordered plate is recalculated.
+  late FoodItem _food;
+  late FoodItem _unitSource;
+  List<FoodServing> _units = const [];
   FoodServing? _unit;
-  int _sizeIndex = 1;
-  bool _weighedWithInedible = false;
-  MealEntry? _detailedEntry;
-  bool _loadingUnits = true;
+  int _size = 1;
+  bool _touched = false;
 
-  double get _amount => double.tryParse(_quantity.text) ?? 0;
+  /// Components the user listed by hand.
+  MealEntry? _customEntry;
+  PlateOrder _order = const PlateOrder();
+  PlateOrder? _savedOrder;
+  final _eggs = <EggStyle, FoodItem>{};
+
+  double get _amount => double.tryParse(_quantity.text.trim()) ?? 0;
 
   double get _unitGrams {
     final unit = _unit;
     if (unit == null) return 1;
     final sizes = unit.sizeGrams;
-    return sizes[_sizeIndex.clamp(0, sizes.length - 1)];
+    return sizes[_size.clamp(0, sizes.length - 1)];
   }
 
-  /// Grams of the edible part, which is what the nutrient values describe.
-  double get _grams {
-    final grams = _amount * _unitGrams;
-    if (_unit == null && _weighedWithInedible && widget.food.hasInediblePart) {
-      return grams * widget.food.ediblePortionPercent! / 100;
-    }
-    return grams;
-  }
+  double get _grams => _amount * _unitGrams;
+  bool get _validAmount => _grams.isFinite && _grams >= 1 && _grams <= 5000;
 
-  bool get _standardValid => _grams.isFinite && _grams >= 1 && _grams <= 5000;
-  bool get _valid => _detailedEntry != null || _standardValid;
-  bool get _usesDefaultAmount =>
-      widget.existingEntry == null && widget.initialGrams == null;
+  /// Mixed dishes can be broken into components; single foods cannot.
+  bool get _isDish =>
+      const {'T', 'DOH11', 'DOH14', 'S'}
+          .contains(HouseholdUnits.foodGroup(_food.foodCode)) ||
+      PlateOrderCalculator.isRicePlate(_food, _unit);
+
+  bool get _ricePlate =>
+      !widget.draft &&
+      _customEntry == null &&
+      PlateOrderCalculator.isRicePlate(_food, _unit);
 
   @override
   void initState() {
     super.initState();
-    _detailedEntry =
-        widget.existingEntry?.isDetailed == true ? widget.existingEntry : null;
-    final initial = widget.existingEntry?.grams ?? widget.initialGrams ?? 100;
-    _quantity =
-        TextEditingController(text: _formatAmount(initial, grams: true));
-    if (widget.food.servings.isNotEmpty) {
-      _applyUnits(widget.food.servings);
-    } else {
-      _loadUnits();
+    final existing = widget.existingEntry;
+    final catalog = FoodCatalogService.instance.cachedFood(widget.food.id);
+    final sameFood =
+        catalog != null && catalog.foodCode == widget.food.foodCode;
+    _food = widget.food;
+    final order = existing?.plateOrder;
+    if (order != null && sameFood) {
+      _food = catalog;
+      _savedOrder = order;
+    } else if (existing?.isDetailed == true) {
+      _customEntry = existing;
     }
+    _unitSource =
+        widget.food.servings.isNotEmpty || !sameFood ? widget.food : catalog;
+    _units = HouseholdUnits.forFood(_unitSource);
+    _restore();
+    if (_unitSource.servings.isEmpty) _loadMeasuredUnits();
+    _loadPlateFoods();
   }
 
-  String _formatAmount(double value, {bool grams = false}) {
-    final whole = value == value.roundToDouble();
-    return value.toStringAsFixed(whole ? 0 : (grams ? 1 : 2));
-  }
-
-  Future<void> _loadUnits() async {
-    final units =
-        await FoodCatalogService.instance.loadVerifiedServings(widget.food.id);
-    if (!mounted) return;
-    setState(() => _applyUnits(units));
-  }
-
-  void _applyUnits(List<FoodServing> units) {
-    _units = FoodServing.sorted(units);
-    _loadingUnits = false;
-    // People estimate household portions better than grams, so a new entry
-    // starts from one default serving when a verified serving exists.
-    if (_usesDefaultAmount && _units.isNotEmpty && _unit == null) {
-      _unit = _units.first;
-      _quantity.text = '1';
+  /// Shows the saved amount in the unit it was logged in, or one default
+  /// unit for a new entry.
+  void _restore() {
+    final order = _savedOrder;
+    if (order != null) {
+      _unit =
+          _units.where((unit) => unit.label == order.unitLabel).firstOrNull ??
+              _units.where((unit) => unit.shortNoun == 'จาน').firstOrNull;
+      _size = order.size;
+      _order = order;
+      _setQuantity(order.amount);
+      return;
     }
+    final grams = widget.existingEntry?.grams ?? widget.initialGrams;
+    if (grams == null) {
+      _unit = _units.firstOrNull;
+      _size = 1;
+      _setQuantity(_unit == null ? 100 : 1);
+      return;
+    }
+    final found = HouseholdUnits.match(_units, grams);
+    _unit = found?.unit;
+    _size = found?.size ?? 1;
+    _setQuantity(found?.amount ?? grams);
   }
 
-  void _selectUnit(FoodServing? unit) {
+  void _setQuantity(double value) {
+    _quantity.text = HouseholdUnits.formatNumber(
+        _unit == null ? (value * 10).round() / 10 : value);
+  }
+
+  Future<void> _loadMeasuredUnits() async {
+    final measured =
+        await FoodCatalogService.instance.loadVerifiedServings(_unitSource.id);
+    if (!mounted || measured.isEmpty) return;
     setState(() {
-      _unit = unit;
-      _sizeIndex = 1;
-      _quantity.text = unit == null ? '100' : '1';
+      _units = HouseholdUnits.forFood(_unitSource, measured: measured);
+      if (!_touched) _restore();
     });
   }
 
-  void _setAmount(double amount) {
-    setState(
-        () => _quantity.text = _formatAmount(amount, grams: _unit == null));
+  Future<void> _loadPlateFoods() async {
+    if (widget.draft || _customEntry != null) return;
+    final plate = _units.where((unit) => unit.shortNoun == 'จาน').firstOrNull;
+    if (!PlateOrderCalculator.isRicePlate(_food, plate)) return;
+    final catalog = FoodCatalogService.instance;
+    final eggs = <EggStyle, FoodItem>{
+      for (final style in EggStyle.values)
+        if (await catalog.foodByCode(style.foodCode) case final egg?)
+          style: egg,
+    };
+    if (!mounted) return;
+    setState(() => _eggs.addAll(eggs));
   }
 
-  void _step(int direction) {
-    final step = _unit == null ? 10.0 : .5;
-    final minimum = _unit == null ? 1.0 : .5;
-    final current = _amount.isFinite ? _amount : 0;
-    _setAmount((current + direction * step).clamp(minimum, 5000).toDouble());
+  void _change(VoidCallback update) => setState(() {
+        _touched = true;
+        update();
+      });
+
+  void _selectUnit(FoodServing? unit) => _change(() {
+        _unit = unit;
+        _size = 1;
+        _setQuantity(unit == null ? 100 : 1);
+      });
+
+  void _step(int direction) => _change(() {
+        final step = _unit == null ? 10.0 : .5;
+        final current = _amount.isFinite ? _amount : 0.0;
+        final next = ((current / step).round() + direction) * step;
+        _setQuantity(next.clamp(step, 5000).toDouble());
+      });
+
+  MealEntry? get _preview {
+    if (_customEntry case final custom?) return custom;
+    if (!_validAmount) return null;
+    final existing = widget.existingEntry;
+    if (_ricePlate) {
+      return PlateOrderCalculator.build(
+        dish: _food,
+        plateGrams: _unitGrams,
+        order: _order.copyWith(
+            unitLabel: _unit!.label, size: _size, amount: _amount),
+        egg: _order.egg == null ? null : _eggs[_order.egg],
+        mealType: widget.initialMealType,
+        dateKey: widget.dateKey,
+        existingId: existing?.id,
+        existingCreatedAt: existing?.createdAt,
+      );
+    }
+    return MealEntry.fromFood(
+      food: _food,
+      mealType: widget.initialMealType,
+      grams: _grams,
+      dateKey: widget.dateKey,
+      existingId: existing?.id,
+      existingCreatedAt: existing?.createdAt,
+    );
   }
 
   Future<void> _openComponents() async {
     final entry = await Navigator.of(context).push<MealEntry>(MaterialPageRoute(
       builder: (_) => FoodComponentsScreen(
-        parentFood: widget.food,
+        parentFood: _food,
         mealType: widget.initialMealType,
         dateKey: widget.dateKey,
-        existingEntry: _detailedEntry,
+        existingEntry: _customEntry,
       ),
     ));
-    if (entry != null && mounted) {
-      setState(() => _detailedEntry = entry);
-    }
+    if (entry != null && mounted) setState(() => _customEntry = entry);
   }
 
   Future<void> _useStandard() async {
-    if (_detailedEntry == null) return;
     final confirmed = await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
-            title: const Text('เปลี่ยนเป็นแบบมาตรฐาน?'),
+            title: const Text('กลับไปใช้แบบปกติ?'),
             content: const Text(
-                'ส่วนประกอบที่ปรับไว้จะถูกนำออก และระบบจะคำนวณจากน้ำหนักรวมของเมนูแทน'),
+                'ส่วนประกอบที่ระบุไว้จะถูกนำออก แล้วเลือกปริมาณของเมนูนี้แทน'),
             actions: [
               TextButton(
                   onPressed: () => Navigator.pop(dialogContext, false),
@@ -163,30 +239,51 @@ class _FoodAmountScreenState extends State<FoodAmountScreen> {
           ),
         ) ??
         false;
-    if (confirmed && mounted) {
-      setState(() {
-        _detailedEntry = null;
-        _unit = _units.isEmpty ? null : _units.first;
-        _sizeIndex = 1;
-        _quantity.text = _unit == null ? '100' : '1';
-      });
-    }
+    if (!confirmed || !mounted) return;
+    setState(() {
+      _customEntry = null;
+      _unit = _units.firstOrNull;
+      _size = 1;
+      _setQuantity(_unit == null ? 100 : 1);
+    });
+    _loadPlateFoods();
   }
 
-  void _save() {
-    if (!_valid) return;
-    if (_detailedEntry case final detailed?) {
-      Navigator.of(context).pop(detailed);
-      return;
-    }
-    Navigator.of(context).pop(MealEntry.fromFood(
-      food: widget.food,
-      mealType: widget.initialMealType,
-      grams: _grams,
-      dateKey: widget.dateKey,
-      existingId: widget.existingEntry?.id,
-      existingCreatedAt: widget.existingEntry?.createdAt,
-    ));
+  void _showPhoto() {
+    final food = _food;
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        clipBehavior: Clip.antiAlias,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          AspectRatio(
+            aspectRatio: 4 / 3,
+            child: Image.network(
+              food.imageUrl!,
+              fit: BoxFit.cover,
+              errorBuilder: (_, error, stack) =>
+                  FoodPhoto(foodCode: food.foodCode, size: 240),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Text(food.displayName,
+                style: Theme.of(dialogContext).textTheme.titleMedium),
+          ),
+          if (food.imageCredit != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Text('ภาพ: ${food.imageCredit}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('ปิด'),
+          ),
+        ]),
+      ),
+    );
   }
 
   @override
@@ -197,30 +294,8 @@ class _FoodAmountScreenState extends State<FoodAmountScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final detailed = _detailedEntry;
-    final food = widget.food;
-    final factor = _standardValid ? _grams / 100 : 0.0;
-    final nutrition = detailed != null
-        ? _Nutrition(
-            calories: detailed.calories,
-            protein: detailed.protein,
-            carbs: detailed.carbs,
-            fat: detailed.fat,
-            sugar: detailed.hasSugarData ? detailed.sugar : null,
-            sodium: detailed.hasSodiumData ? detailed.sodium : null,
-          )
-        : _Nutrition(
-            calories: food.energyKcalPer100g * factor,
-            protein: food.proteinGPer100g * factor,
-            carbs: food.carbsGPer100g * factor,
-            fat: food.fatGPer100g * factor,
-            sugar: food.sugarGPer100g == null
-                ? null
-                : food.sugarGPer100g! * factor,
-            sodium: food.sodiumMgPer100g == null
-                ? null
-                : food.sodiumMgPer100g! * factor,
-          );
+    final preview = _preview;
+    final custom = _customEntry;
     final saveLabel = widget.draft
         ? 'ใช้ปริมาณนี้'
         : widget.existingEntry == null
@@ -230,7 +305,7 @@ class _FoodAmountScreenState extends State<FoodAmountScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.draft
-            ? 'ระบุปริมาณส่วนประกอบ'
+            ? 'ระบุปริมาณ'
             : widget.existingEntry == null
                 ? 'บันทึกอาหาร'
                 : 'แก้ไขรายการ'),
@@ -247,70 +322,41 @@ class _FoodAmountScreenState extends State<FoodAmountScreen> {
       bottomNavigationBar: SafeArea(
         minimum: const EdgeInsets.fromLTRB(20, 8, 20, 16),
         child: FilledButton(
-          onPressed: _valid ? _save : null,
-          child: Text(_valid
-              ? '$saveLabel · ${nutrition.calories.round()} kcal'
-              : saveLabel),
+          onPressed:
+              preview == null ? null : () => Navigator.of(context).pop(preview),
+          child: Text(preview == null
+              ? saveLabel
+              : '$saveLabel · ${preview.calories.round()} kcal'),
         ),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
         children: [
-          Row(children: [
-            FoodPhoto(url: food.imageUrl, foodCode: food.foodCode, size: 68),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(food.displayName,
-                      style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 4),
-                  Text(
-                    widget.draft
-                        ? '${food.energyKcalPer100g.round()} kcal ต่อ 100 กรัม'
-                        : widget.initialMealType.label,
-                    style: const TextStyle(color: AppColors.muted),
-                  ),
-                  if (food.imageUrl != null && food.imageCredit != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        food.imageCredit!,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: AppColors.muted, fontSize: 10),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ]),
+          _buildHeader(context),
           const SizedBox(height: 18),
-          if (detailed == null) ...[
-            _buildStandardAmount(context),
-            if (!widget.draft) ...[
+          if (custom != null)
+            _buildCustomCard(context, custom)
+          else ...[
+            _buildAmountCard(context, preview),
+            if (_ricePlate && _eggs.isNotEmpty) ...[
               const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _openComponents,
-                icon: const Icon(Icons.account_tree_outlined),
-                label: const Text('แยกส่วนประกอบเพื่อความแม่นยำ'),
-              ),
-              const Padding(
-                padding: EdgeInsets.only(top: 6),
-                child: Text(
-                  'เหมาะกับเมนูหลายส่วน เช่น ข้าวมันไก่ ข้าวราดแกง',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: AppColors.muted, fontSize: 12),
+              _buildOrderCard(context),
+            ],
+            if (!widget.draft && _isDish)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Center(
+                  child: TextButton.icon(
+                    onPressed: _openComponents,
+                    icon: const Icon(Icons.playlist_add_rounded),
+                    label: const Text('ระบุส่วนประกอบเอง'),
+                  ),
                 ),
               ),
-            ],
-          ] else
-            _buildDetailedCard(context, detailed),
-          const SizedBox(height: 16),
-          _NutritionPanel(
-            nutrition: nutrition,
+          ],
+          const SizedBox(height: 8),
+          _NutritionSummary(
+            entry: preview,
             target: widget.draft ? null : widget.healthResult,
           ),
         ],
@@ -318,20 +364,44 @@ class _FoodAmountScreenState extends State<FoodAmountScreen> {
     );
   }
 
-  Widget _buildStandardAmount(BuildContext context) {
+  Widget _buildHeader(BuildContext context) {
+    final food = _food;
+    return Row(children: [
+      GestureDetector(
+        onTap: food.imageUrl == null ? null : _showPhoto,
+        child: FoodPhoto(url: food.imageUrl, foodCode: food.foodCode, size: 64),
+      ),
+      const SizedBox(width: 14),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(food.displayName,
+                style: Theme.of(context).textTheme.titleLarge),
+            if (!widget.draft) ...[
+              const SizedBox(height: 2),
+              Text(widget.initialMealType.label,
+                  style: const TextStyle(color: AppColors.muted)),
+            ],
+          ],
+        ),
+      ),
+    ]);
+  }
+
+  Widget _buildAmountCard(BuildContext context, MealEntry? preview) {
     final unit = _unit;
+    final showSizes = unit != null && unit.hasSizeRange;
     return _Section(
-      title: 'กินไปเท่าไหร่?',
+      title: 'กินไปเท่าไหร่',
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (_units.isNotEmpty || _loadingUnits) ...[
+          if (_units.isNotEmpty) ...[
             Wrap(spacing: 8, runSpacing: 8, children: [
               for (final serving in _units)
                 ChoiceChip(
-                  label:
-                      Text('${serving.label} · ${serving.isEstimate ? '≈' : ''}'
-                          '${_formatAmount(serving.grams)} ก.'),
+                  label: Text(serving.noun),
                   selected: unit?.id == serving.id,
                   onSelected: (_) => _selectUnit(serving),
                 ),
@@ -341,147 +411,135 @@ class _FoodAmountScreenState extends State<FoodAmountScreen> {
                 onSelected: (_) => _selectUnit(null),
               ),
             ]),
-            if (_loadingUnits)
-              const Padding(
-                padding: EdgeInsets.only(top: 10),
-                child: LinearProgressIndicator(minHeight: 2),
-              ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
           ],
-          if (unit != null && unit.hasSizeRange) ...[
-            Text('ขนาด${unit.noun}',
-                style: const TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: SegmentedButton<int>(
-                showSelectedIcon: false,
-                segments: [
-                  for (final (index, grams) in unit.sizeGrams.indexed)
-                    ButtonSegment(
-                      value: index,
-                      label: Column(mainAxisSize: MainAxisSize.min, children: [
-                        Text(_sizeLabels[index]),
-                        Text('${grams.round()} ก.',
-                            style: const TextStyle(fontSize: 11)),
-                      ]),
-                    ),
-                ],
-                selected: {_sizeIndex},
-                onSelectionChanged: (values) =>
-                    setState(() => _sizeIndex = values.first),
-              ),
+          if (showSizes) ...[
+            SegmentedButton<int>(
+              showSelectedIcon: false,
+              segments: [
+                for (final (index, label) in HouseholdUnits.sizeLabels.indexed)
+                  ButtonSegment(value: index, label: Text(label)),
+              ],
+              selected: {_size},
+              onSelectionChanged: (values) =>
+                  _change(() => _size = values.first),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
           ],
           Row(children: [
             IconButton.filledTonal(
               tooltip: 'ลดปริมาณ',
               onPressed: () => _step(-1),
-              icon: const Icon(Icons.remove),
+              icon: const Icon(Icons.remove_rounded),
             ),
-            const SizedBox(width: 12),
             Expanded(
-              child: TextField(
-                controller: _quantity,
-                textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                  labelText: unit == null ? 'กรัม' : 'จำนวน (${unit.noun})',
-                  errorText: _standardValid ? null : 'ปริมาณรวม 1–5,000 กรัม',
+              child: Column(children: [
+                TextField(
+                  controller: _quantity,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 30, fontWeight: FontWeight.w800),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  onChanged: (_) => _change(() {}),
                 ),
-                onChanged: (_) => setState(() {}),
-              ),
+                Text(unit == null ? 'กรัม' : unit.shortNoun,
+                    style: const TextStyle(
+                        color: AppColors.muted, fontWeight: FontWeight.w600)),
+              ]),
             ),
-            const SizedBox(width: 12),
             IconButton.filledTonal(
               tooltip: 'เพิ่มปริมาณ',
               onPressed: () => _step(1),
-              icon: const Icon(Icons.add),
+              icon: const Icon(Icons.add_rounded),
             ),
           ]),
-          const SizedBox(height: 12),
-          Wrap(spacing: 8, runSpacing: 8, children: [
-            if (unit == null)
-              for (final amount in const <double>[50, 100, 150, 200])
-                ActionChip(
-                  label: Text('${_formatAmount(amount)} ก.'),
-                  onPressed: () => _setAmount(amount),
-                )
-            else
-              for (final (amount, label) in <(double, String)>[
-                (.5, 'ครึ่ง${unit.noun}'),
-                (1, '1 ${unit.noun}'),
-                (1.5, '1½ ${unit.noun}'),
-                (2, '2 ${unit.noun}'),
-              ])
-                ActionChip(
-                  label: Text(label),
-                  onPressed: () => _setAmount(amount),
-                ),
-          ]),
-          if (unit == null && widget.food.hasInediblePart) ...[
-            const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _weighedWithInedible,
-              onChanged: (value) =>
-                  setState(() => _weighedWithInedible = value),
-              title: const Text('น้ำหนักนี้รวมกระดูกหรือเปลือก'),
-              subtitle: Text('ระบบจะคิดเฉพาะส่วนที่กินได้ '
-                  '${widget.food.ediblePortionPercent!.round()}% ของน้ำหนัก'),
+          const SizedBox(height: 10),
+          Text(
+            !_validAmount
+                ? 'ระบุปริมาณรวม 1–5,000 กรัม'
+                : unit != null
+                    ? '≈ ${HouseholdUnits.formatNumber((preview?.grams ?? _grams).roundToDouble())} กรัม'
+                    : _units.isEmpty
+                        ? 'ดูน้ำหนักได้จากฉลากบนบรรจุภัณฑ์'
+                        : 'ไม่รู้น้ำหนัก? เลือกหน่วยด้านบนแทนได้',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              color: _validAmount ? AppColors.muted : AppColors.orange,
             ),
-          ],
-          if (unit != null ||
-              (_weighedWithInedible && widget.food.hasInediblePart))
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                _standardValid
-                    ? unit == null
-                        ? 'ส่วนที่กินได้ ≈ ${_formatAmount(_grams, grams: true)} กรัม'
-                        : 'รวม ≈ ${_formatAmount(_grams, grams: true)} กรัม'
-                    : 'ตรวจสอบปริมาณที่เลือก',
-                style: const TextStyle(
-                    color: AppColors.tealDark, fontWeight: FontWeight.w700),
-              ),
-            ),
-          if (unit != null && unit.sourceName != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                unit.isEstimate
-                    ? 'ค่าประมาณจากเมนูกลุ่มเดียวกัน · ${unit.sourceName}'
-                    : 'ที่มา: ${unit.sourceName}',
-                style: const TextStyle(color: AppColors.muted, fontSize: 11),
-              ),
-            ),
-          if (!_loadingUnits && _units.isEmpty)
-            const Padding(
-              padding: EdgeInsets.only(top: 10),
-              child: Text(
-                'เมนูนี้ยังไม่มีหน่วยจาน/ทัพพีที่มีแหล่งอ้างอิง จึงใช้หน่วยกรัม',
-                style: TextStyle(color: AppColors.muted, fontSize: 12),
-              ),
-            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildDetailedCard(BuildContext context, MealEntry entry) => _Section(
-        title: 'แยกส่วนประกอบ · ${entry.components.length} รายการ',
+  Widget _buildOrderCard(BuildContext context) {
+    final order = _order;
+    return _Section(
+      title: 'เพิ่มไข่',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          for (final style in EggStyle.values)
+            if (_eggs.containsKey(style))
+              ChoiceChip(
+                label: Text(style.label),
+                selected: order.egg == style,
+                onSelected: (selected) => _change(() => _order = selected
+                    ? order.copyWith(
+                        egg: () => style,
+                        eggCount: order.eggCount < 1 ? 1 : order.eggCount)
+                    : order.copyWith(egg: () => null, eggCount: 0)),
+              ),
+        ]),
+        if (order.hasEgg)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(children: [
+              Expanded(
+                child: Text('${order.egg!.label} ${order.eggCount} ฟอง',
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              IconButton(
+                tooltip: 'ลดจำนวนไข่',
+                onPressed: () => _change(() => _order = order.eggCount <= 1
+                    ? order.copyWith(egg: () => null, eggCount: 0)
+                    : order.copyWith(eggCount: order.eggCount - 1)),
+                icon: const Icon(Icons.remove_circle_outline_rounded),
+              ),
+              IconButton(
+                tooltip: 'เพิ่มจำนวนไข่',
+                onPressed: order.eggCount >= 6
+                    ? null
+                    : () => _change(() =>
+                        _order = order.copyWith(eggCount: order.eggCount + 1)),
+                icon: const Icon(Icons.add_circle_outline_rounded),
+              ),
+            ]),
+          ),
+      ]),
+    );
+  }
+
+  Widget _buildCustomCard(BuildContext context, MealEntry entry) => _Section(
+        title: 'ส่วนประกอบที่ระบุเอง',
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           for (final component in entry.components)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Row(children: [
                 Expanded(child: Text(component.foodName)),
-                Text('${component.grams.toStringAsFixed(1)} ก.',
-                    style: const TextStyle(color: AppColors.muted)),
+                Text(
+                  component.portion ??
+                      HouseholdUnits.describe(
+                          component.toFoodItem(), component.grams),
+                  style: const TextStyle(color: AppColors.muted),
+                ),
               ]),
             ),
           const SizedBox(height: 4),
@@ -496,7 +554,7 @@ class _FoodAmountScreenState extends State<FoodAmountScreen> {
           Center(
             child: TextButton(
               onPressed: _useStandard,
-              child: const Text('กลับไปใช้ปริมาณรวมแบบมาตรฐาน'),
+              child: const Text('กลับไปใช้แบบปกติ'),
             ),
           ),
         ]),
@@ -517,7 +575,7 @@ class _Section extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(title, style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 12),
+              const SizedBox(height: 14),
               child,
             ],
           ),
@@ -525,101 +583,79 @@ class _Section extends StatelessWidget {
       );
 }
 
-class _Nutrition {
-  const _Nutrition({
-    required this.calories,
-    required this.protein,
-    required this.carbs,
-    required this.fat,
-    required this.sugar,
-    required this.sodium,
-  });
+class _NutritionSummary extends StatelessWidget {
+  const _NutritionSummary({required this.entry, required this.target});
 
-  final double calories;
-  final double protein;
-  final double carbs;
-  final double fat;
-  final double? sugar;
-  final double? sodium;
-}
-
-class _NutritionPanel extends StatelessWidget {
-  const _NutritionPanel({required this.nutrition, required this.target});
-
-  final _Nutrition nutrition;
+  final MealEntry? entry;
   final HealthResult? target;
 
   @override
   Widget build(BuildContext context) {
+    final entry = this.entry;
     final target = this.target;
+    final calories = entry?.calories ?? 0;
     final share = target == null || target.calories <= 0
         ? null
-        : nutrition.calories / target.calories;
+        : calories / target.calories;
+    String minor(String label, double? value, bool known, String unit) =>
+        value == null || !known
+            ? '$label ไม่มีข้อมูล'
+            : '$label ${value.toStringAsFixed(value >= 100 ? 0 : 1)} $unit';
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: AppColors.mint,
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(22),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('สารอาหารตามปริมาณที่เลือก',
-            style: TextStyle(color: AppColors.muted)),
-        const SizedBox(height: 4),
-        Text('${nutrition.calories.toStringAsFixed(0)} kcal',
-            style: const TextStyle(
-                fontSize: 32,
-                fontWeight: FontWeight.w900,
-                color: AppColors.tealDark)),
-        if (share != null)
-          Text(
-            'ประมาณ ${(share * 100).round()}% ของพลังงานทั้งวัน '
-            '(เป้าหมาย ${target!.calories.round()} kcal)',
-            style: const TextStyle(fontSize: 12, color: AppColors.muted),
-          ),
-        const SizedBox(height: 16),
-        _MacroRow(
-          label: 'คาร์บ',
-          value: nutrition.carbs,
-          target: target?.carbs,
-          color: AppColors.teal,
-        ),
-        _MacroRow(
-          label: 'โปรตีน',
-          value: nutrition.protein,
-          target: target?.protein,
-          color: AppColors.blue,
-        ),
-        _MacroRow(
-          label: 'ไขมัน',
-          value: nutrition.fat,
-          target: target?.fat,
-          color: AppColors.amber,
-        ),
-        const Divider(height: 22),
-        Row(children: [
-          Expanded(
-            child: _MinorNutrient(
-              label: 'น้ำตาล',
-              value: nutrition.sugar,
-              unit: 'ก.',
+        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text('${calories.round()} kcal',
+              style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w900,
+                  color: AppColors.tealDark)),
+          const Spacer(),
+          if (share != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text('${(share * 100).round()}% ของวัน',
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12)),
             ),
-          ),
-          Expanded(
-            child: _MinorNutrient(
-              label: 'โซเดียม',
-              value: nutrition.sodium,
-              unit: 'มก.',
-            ),
-          ),
         ]),
+        const SizedBox(height: 14),
+        Row(children: [
+          _MacroTile(
+              label: 'คาร์บ',
+              value: entry?.carbs ?? 0,
+              target: target?.carbs,
+              color: AppColors.teal),
+          const SizedBox(width: 12),
+          _MacroTile(
+              label: 'โปรตีน',
+              value: entry?.protein ?? 0,
+              target: target?.protein,
+              color: AppColors.blue),
+          const SizedBox(width: 12),
+          _MacroTile(
+              label: 'ไขมัน',
+              value: entry?.fat ?? 0,
+              target: target?.fat,
+              color: AppColors.amber),
+        ]),
+        const SizedBox(height: 12),
+        Text(
+          '${minor('น้ำตาล', entry?.sugar, entry?.hasSugarData ?? false, 'ก.')}'
+          '  ·  '
+          '${minor('โซเดียม', entry?.sodium, entry?.hasSodiumData ?? false, 'มก.')}',
+          style: const TextStyle(color: AppColors.muted, fontSize: 12),
+        ),
       ]),
     );
   }
 }
 
-class _MacroRow extends StatelessWidget {
-  const _MacroRow({
+class _MacroTile extends StatelessWidget {
+  const _MacroTile({
     required this.label,
     required this.value,
     required this.target,
@@ -634,64 +670,26 @@ class _MacroRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final target = this.target;
-    final progress =
-        target == null || target <= 0 ? null : (value / target).clamp(0.0, 1.0);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+    return Expanded(
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Expanded(
-            child: Text(label,
-                style: const TextStyle(fontWeight: FontWeight.w700)),
+        Text(label,
+            style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+        const SizedBox(height: 2),
+        Text('${value.toStringAsFixed(value >= 10 ? 0 : 1)} ก.',
+            style: const TextStyle(fontWeight: FontWeight.w800)),
+        const SizedBox(height: 6),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: LinearProgressIndicator(
+            value: target == null || target <= 0
+                ? 0
+                : (value / target).clamp(0.0, 1.0),
+            minHeight: 6,
+            color: color,
+            backgroundColor: Colors.white,
           ),
-          Text(
-            target == null
-                ? '${value.toStringAsFixed(1)} ก.'
-                : '${value.toStringAsFixed(1)} / ${target.round()} ก.',
-            style: const TextStyle(fontSize: 13),
-          ),
-        ]),
-        if (progress != null) ...[
-          const SizedBox(height: 5),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: LinearProgressIndicator(
-              value: progress,
-              minHeight: 7,
-              color: color,
-              backgroundColor: Colors.white,
-            ),
-          ),
-        ],
+        ),
       ]),
     );
   }
-}
-
-class _MinorNutrient extends StatelessWidget {
-  const _MinorNutrient({
-    required this.label,
-    required this.value,
-    required this.unit,
-  });
-
-  final String label;
-  final double? value;
-  final String unit;
-
-  @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label,
-              style: const TextStyle(fontSize: 12, color: AppColors.muted)),
-          const SizedBox(height: 2),
-          Text(
-            value == null
-                ? 'ไม่มีข้อมูล'
-                : '${value!.toStringAsFixed(value! >= 100 ? 0 : 1)} $unit',
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-        ],
-      );
 }

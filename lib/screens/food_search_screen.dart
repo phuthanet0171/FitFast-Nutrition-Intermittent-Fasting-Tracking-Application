@@ -6,6 +6,7 @@ import '../models/meal_entry.dart';
 import '../services/food_catalog_service.dart';
 import '../services/food_preference_service.dart';
 import '../services/food_search.dart';
+import '../services/household_units.dart';
 import '../widgets/food_photo.dart';
 import 'food_amount_screen.dart';
 
@@ -126,16 +127,14 @@ class _FoodSearchScreenState extends State<FoodSearchScreen> {
     }
   }
 
-  /// Energy per default household unit when one exists, else per 100 g.
+  /// Energy per household unit when one exists, else per 100 g.
   static String _energyLabel(FoodItem food) {
-    final serving = food.defaultServing;
+    final serving = HouseholdUnits.forFood(food).firstOrNull;
     if (serving == null) {
       return '${food.energyKcalPer100g.round()} kcal / 100 กรัม';
     }
     final kcal = food.energyKcalPer100g * serving.grams / 100;
-    final approx = serving.isEstimate ? '≈' : '';
-    return '${serving.label} $approx${serving.grams.round()} ก. '
-        '· ${kcal.round()} kcal';
+    return '${serving.label} · ${kcal.round()} kcal';
   }
 
   @override

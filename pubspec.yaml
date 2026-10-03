@@ -33,17 +33,17 @@ flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
   image_path: "assets/icons/fitfast_logo.png"
-  adaptive_icon_background: "#E9F8F2"
-  adaptive_icon_foreground: "assets/icons/fitfast_logo.png"
-  adaptive_icon_foreground_inset: 18
+  adaptive_icon_background: "#1BA58A"
+  adaptive_icon_foreground: "assets/icons/fitfast_launcher_foreground.png"
+  adaptive_icon_foreground_inset: 0
   min_sdk_android: 21
   remove_alpha_ios: true
-  background_color_ios: "#E9F8F2"
+  background_color_ios: "#1BA58A"
   web:
     generate: true
     image_path: "assets/icons/fitfast_logo.png"
     background_color: "#E9F8F2"
-    theme_color: "#087A5B"
+    theme_color: "#137963"
   windows:
     generate: true
     image_path: "assets/icons/fitfast_logo.png"

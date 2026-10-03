@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../models/food_item.dart';
 import '../models/meal_entry.dart';
+import '../services/food_catalog_service.dart';
+import '../services/household_units.dart';
 import '../services/meal_history_service.dart';
 import '../theme/app_theme.dart';
 import 'food_amount_screen.dart';
@@ -83,15 +85,13 @@ class _FoodComponentsScreenState extends State<FoodComponentsScreen> {
       ),
     ));
     if (portion == null || !mounted) return;
-    final component = MealComponent.fromFood(food, portion.grams);
     setState(() {
-      final existing =
-          _components.indexWhere((item) => item.foodId == component.foodId);
+      final existing = _components.indexWhere((item) => item.foodId == food.id);
       if (existing < 0) {
-        _components.add(component);
+        _components.add(_component(food, portion.grams));
       } else {
-        _components[existing] = MealComponent.fromFood(
-            food, _components[existing].grams + component.grams);
+        _components[existing] =
+            _component(food, _components[existing].grams + portion.grams);
       }
       _reusedPrevious = false;
     });
@@ -111,9 +111,14 @@ class _FoodComponentsScreenState extends State<FoodComponentsScreen> {
       ),
     ));
     if (portion == null || !mounted) return;
-    setState(
-        () => _components[index] = MealComponent.fromFood(food, portion.grams));
+    setState(() => _components[index] = _component(food, portion.grams));
   }
+
+  /// Keeps the amount in the unit it was chosen in, e.g. "2 ฟอง".
+  MealComponent _component(FoodItem food, double grams) =>
+      MealComponent.fromFood(food, grams,
+          portion: HouseholdUnits.describe(
+              FoodCatalogService.instance.cachedFood(food.id) ?? food, grams));
 
   void _remove(int index) {
     final removed = _components.removeAt(index);
@@ -154,7 +159,8 @@ class _FoodComponentsScreenState extends State<FoodComponentsScreen> {
               style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 6),
           const Text(
-            'ชั่งเฉพาะส่วนที่รับประทานแล้วเพิ่มทีละรายการ เช่น ข้าว ไก่ และน้ำจิ้ม',
+            'เพิ่มทีละอย่างที่อยู่ในจาน เช่น ข้าว กับข้าว และไข่ '
+            'เลือกได้ทั้งทัพพี ฟอง หรือกรัม',
             style: TextStyle(color: AppColors.muted),
           ),
           const SizedBox(height: 16),
@@ -170,13 +176,13 @@ class _FoodComponentsScreenState extends State<FoodComponentsScreen> {
                 SizedBox(width: 10),
                 Expanded(
                     child: Text(
-                        'นำส่วนประกอบครั้งล่าสุดมาให้แล้ว คุณแก้น้ำหนักก่อนบันทึกได้')),
+                        'นำส่วนประกอบครั้งล่าสุดมาให้แล้ว แตะเพื่อแก้ปริมาณได้')),
               ]),
             ),
             const SizedBox(height: 12),
           ],
           Wrap(spacing: 8, runSpacing: 8, children: [
-            for (final query in ['ข้าว', 'ไก่', 'น้ำจิ้ม', 'ผัก'])
+            for (final query in ['ข้าวสวย', 'ไข่', 'ไก่', 'หมู', 'ผัก'])
               ActionChip(
                 avatar: const Icon(Icons.add, size: 17),
                 label: Text(query),
@@ -203,7 +209,7 @@ class _FoodComponentsScreenState extends State<FoodComponentsScreen> {
                 SizedBox(height: 10),
                 Text('ยังไม่มีส่วนประกอบ',
                     style: TextStyle(fontWeight: FontWeight.w800)),
-                Text('เริ่มจากข้าวหรือเนื้อสัตว์ที่อยู่ในจาน',
+                Text('เช่น ข้าวสวย 3 ทัพพี + ผัดกะเพราไก่ + ไข่ดาว 2 ฟอง',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: AppColors.muted)),
               ]),
@@ -218,7 +224,8 @@ class _FoodComponentsScreenState extends State<FoodComponentsScreen> {
                     title: Text(_components[index].foodName,
                         style: const TextStyle(fontWeight: FontWeight.w700)),
                     subtitle: Text(
-                        '${_components[index].grams.toStringAsFixed(1)} กรัม · ${_components[index].calories.round()} kcal'),
+                        '${_components[index].portion ?? HouseholdUnits.describe(_components[index].toFoodItem(), _components[index].grams)}'
+                        ' · ${_components[index].calories.round()} kcal'),
                     onTap: () => _edit(index),
                     trailing: IconButton(
                       tooltip: 'นำออก',
@@ -259,7 +266,7 @@ class _FoodComponentsScreenState extends State<FoodComponentsScreen> {
           ],
           const SizedBox(height: 12),
           const Text(
-            'ผลลัพธ์ขึ้นอยู่กับอาหารที่เลือกและน้ำหนักที่ชั่งได้จริง ค่าจากร้านอาหารยังเป็นค่าประมาณ',
+            'ค่าจากร้านอาหารเป็นค่าประมาณ เพราะแต่ละร้านใช้น้ำมันและปริมาณไม่เท่ากัน',
             style: TextStyle(color: AppColors.muted, fontSize: 11),
           ),
         ],
