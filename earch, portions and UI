@@ -1,0 +1,29 @@
+warning: in the working copy of 'lib/models/food_item.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/models/food_serving.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/models/meal_entry.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/screens/food_amount_screen.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/screens/food_components_screen.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/screens/food_screen.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/screens/food_search_screen.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/services/food_catalog_service.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/services/meal_history_service.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/theme/app_theme.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/widgets/food_photo.dart', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'pubspec.lock', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'pubspec.yaml', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'test/food_amount_screen_test.dart', LF will be replaced by CRLF the next time Git touches it
+ lib/models/food_item.dart               |  47 [32m+++[m
+ lib/models/food_serving.dart            |  84 [32m++++[m[31m-[m
+ lib/models/meal_entry.dart              |  54 [32m++[m[31m-[m
+ lib/screens/food_amount_screen.dart     | 621 [32m+++++++++++++++++++++[m[31m---------[m
+ lib/screens/food_components_screen.dart |   2 [32m+[m[31m-[m
+ lib/screens/food_screen.dart            | 644 [32m+++++++++++++++++++++++[m[31m---------[m
+ lib/screens/food_search_screen.dart     |  80 [32m+++[m[31m-[m
+ lib/services/food_catalog_service.dart  | 237 [32m++++++[m[31m------[m
+ lib/services/meal_history_service.dart  | 355 [32m+++++++++++++[m[31m-----[m
+ lib/theme/app_theme.dart                |   2 [32m+[m
+ lib/widgets/food_photo.dart             |  65 [32m+++[m[31m-[m
+ pubspec.lock                            |   2 [32m+[m[31m-[m
+ pubspec.yaml                            |   1 [32m+[m
+ test/food_amount_screen_test.dart       | 167 [32m+++++++++[m
+ 14 files changed, 1762 insertions(+), 599 deletions(-)
